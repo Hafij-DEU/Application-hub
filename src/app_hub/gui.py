@@ -1,4 +1,4 @@
-"""GTK 4 / libadwaita window: My Apps, All Apps, AI Install and Cleaner tabs."""
+"""GTK 4 / libadwaita window: My Apps, Updates, Library, All Apps, AI Install and Cleaner tabs."""
 
 import os
 import threading
@@ -13,13 +13,15 @@ from . import APP_ID, __version__, ai, cleaner, core, favorites, history, invent
 
 ICON_DIR = os.path.join(core.LIB_DIR, "icons")
 CSS = """
-.badge { font-size: 0.75em; font-weight: bold; padding: 2px 8px; border-radius: 999px; }
-.ch-apt { background: alpha(#3584e4, 0.18); color: #3584e4; }
-.ch-snap { background: alpha(#e95420, 0.18); color: #e95420; }
-.ch-flatpak { background: alpha(#9141ac, 0.20); color: #a347ba; }
-.ch-appimage, .ch-appimage-url { background: alpha(#2ec27e, 0.18); color: #26a269; }
-.ch-hub, .ch-github, .ch-deb-url { background: alpha(#f6d32d, 0.25); color: #c88800; }
+/* Theme colors only, so App Hub follows the system accent and light/dark style. */
+.badge { font-size: 0.75em; font-weight: bold; padding: 2px 8px; border-radius: 999px;
+         background: alpha(@accent_color, 0.15); color: @accent_color; }
 .log-view { font-family: monospace; font-size: 0.9em; }
+.disk-bar { padding: 6px 12px; }
+.disk-level trough { min-height: 8px; }
+.disk-level.warning progress { background-color: @warning_color; }
+.disk-level.error progress { background-color: @error_color; }
+.release-notes { font-size: 0.92em; }
 """
 
 
@@ -116,6 +118,34 @@ def launch_desktop(path, fallback_app=None):
     return False
 
 
+def set_hub_icon(img, app):
+    """Icon of a GitHub-release app: its installed launcher, Library icon or bundled icon."""
+    info = None
+    if app.installed and app.desktop and not app.renamed:
+        try:
+            info = Gio.DesktopAppInfo.new(app.desktop)
+        except TypeError:
+            info = None
+    bundled = os.path.join(ICON_DIR, f"{app.id}.png")
+    if info and info.get_icon():
+        img.set_from_gicon(info.get_icon())
+    elif app.icon and os.path.exists(app.icon):
+        img.set_from_gicon(Gio.FileIcon.new(Gio.File.new_for_path(app.icon)))
+    elif os.path.exists(bundled):
+        img.set_from_file(bundled)
+    else:
+        img.set_from_icon_name("application-x-executable")
+
+
+def disk_usage(path):
+    """(free, total) bytes of the filesystem holding path."""
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return 0, 0
+    return st.f_bavail * st.f_frsize, st.f_blocks * st.f_frsize
+
+
 # --------------------------------------------------------------------------
 # My Apps: App Hub catalog + Favorites
 # --------------------------------------------------------------------------
@@ -136,29 +166,16 @@ class HubRow(Adw.ActionRow):
         self.web_btn = flat_button("web-browser-symbolic", "Release page", self.on_web)
         for w in (self.progress, self.open_btn, self.main_btn, self.remove_btn, self.web_btn):
             box.append(w)
-        if section.removable:
-            box.append(flat_button("list-remove-symbolic", "Remove from Library (does not uninstall)",
+        if section.removable or app.section == "mine":
+            where = "My Apps" if app.section == "mine" else "Library"
+            box.append(flat_button("list-remove-symbolic", f"Remove from {where} (does not uninstall)",
                                    lambda: section.remove_from_library(self.app)))
         self.add_suffix(box)
         self.sync()
 
     def sync(self):
         app, busy = self.app, self.section.win.busy
-        info = None
-        if app.installed and app.desktop and not app.renamed:
-            try:
-                info = Gio.DesktopAppInfo.new(app.desktop)
-            except TypeError:
-                info = None
-        bundled = os.path.join(ICON_DIR, f"{app.id}.png")
-        if info and info.get_icon():
-            self.icon.set_from_gicon(info.get_icon())
-        elif app.icon and os.path.exists(app.icon):
-            self.icon.set_from_gicon(Gio.FileIcon.new(Gio.File.new_for_path(app.icon)))
-        elif os.path.exists(bundled):
-            self.icon.set_from_file(bundled)
-        else:
-            self.icon.set_from_icon_name("application-x-executable")
+        set_hub_icon(self.icon, app)
         self.set_subtitle(GLib.markup_escape_text(f"{app.summary} · {app.status_text()}" if app.summary
                                                   else app.status_text()))
         downloading = self.cancel is not None
@@ -201,15 +218,25 @@ class HubRow(Adw.ActionRow):
 class HubSection:
     """A group of GitHub-release apps with Install / Update / Open / Uninstall."""
 
-    def __init__(self, win, title, description, apps, removable=False, on_removed=None):
-        self.win, self.apps, self.removable, self.on_removed = win, apps, removable, on_removed
+    def __init__(self, win, title, description, apps, removable=False, on_removed=None, extra=None):
+        self.win, self.apps, self.removable, self.on_removed = win, [], removable, on_removed
         self.group = Adw.PreferencesGroup(title=GLib.markup_escape_text(title),
                                           description=GLib.markup_escape_text(description))
         self.update_all_btn = text_button("Update All", lambda: self.install(
             [a for a in self.apps if a.update_available]), "suggested-action")
         self.update_all_btn.set_visible(False)
-        self.group.set_header_suffix(self.update_all_btn)
+        header = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        header.append(self.update_all_btn)
+        if extra:
+            header.append(extra)
+        self.group.set_header_suffix(header)
         self.rows = {}
+        self.set_apps(apps)
+
+    def set_apps(self, apps):
+        for row in self.rows.values():
+            self.group.remove(row)
+        self.apps, self.rows = apps, {}
         for app in self.apps:
             self.rows[app.id] = HubRow(self, app)
             self.group.add(self.rows[app.id])
@@ -267,7 +294,7 @@ class HubSection:
 
     def remove_from_library(self, app):
         library.remove(app.id)
-        self.win.toast(f"{app.name} removed from the Library")
+        self.win.toast(f"{app.name} removed from {'My Apps' if app.section == 'mine' else 'the Library'}")
         if self.on_removed:
             self.on_removed()
 
@@ -313,9 +340,14 @@ class FavoriteRow(Adw.ActionRow):
 class HomePage:
     def __init__(self, win):
         self.win = win
+        catalog = core.load_catalog(include_library=False)
+        self.self_hub = HubSection(win, "App Hub", "This app · github.com/Hafij-DEU/Application-hub",
+                                   [a for a in catalog if a.section == "self"])
+        add_btn = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Add your own app from GitHub")
+        add_btn.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add App"))
+        add_btn.connect("clicked", lambda *_: AddAppDialog(win, self, "mine").present(win))
         self.hub = HubSection(win, "My Apps", "Installed from each app's latest GitHub release",
-                              core.load_catalog(include_library=False))
-        self.apps = self.hub.apps
+                              self.my_apps(), on_removed=self.reload, extra=add_btn)
         core.refresh_installed(self.apps)
 
         self.fav_group = Adw.PreferencesGroup(
@@ -327,14 +359,34 @@ class HomePage:
                                        subtitle="Star apps in All Apps or AI Install to keep them here")
         self.fav_empty.add_prefix(Gtk.Image(icon_name="non-starred-symbolic"))
         self.fav_group.add(self.fav_empty)
-        self.widget, _ = scrolled_page(self.hub.group, self.fav_group)
+        self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.fav_group)
         self.reload_favorites()
         self.refresh()
 
+    @property
+    def apps(self):
+        return self.self_hub.apps + self.hub.apps
+
+    @staticmethod
+    def my_apps():
+        catalog = core.load_catalog(include_library=False)
+        ids = {a.id for a in catalog}
+        return [a for a in catalog if a.section != "self"] + [
+            a for a in library.load_apps() if a.section == "mine" and a.id not in ids]
+
+    def reload(self):
+        """Re-read My Apps after an app was added or removed."""
+        self.hub.set_apps(self.my_apps())
+        self.hub.refresh()
+        if hasattr(self.win, "library_page"):
+            self.win.library_page.reload()   # a moved Library app may go back there
+
     def refresh(self):
+        self.self_hub.refresh()
         self.hub.refresh()
 
     def sync(self):
+        self.self_hub.sync()
         self.hub.sync()
         for row in self.fav_rows:
             row.sync()
@@ -392,7 +444,7 @@ class LibraryPage:
     def reload(self):
         while child := self.box.get_first_child():
             self.box.remove(child)
-        apps = library.load_apps()
+        apps = [a for a in library.load_apps() if a.section != "mine"]
         groups = {}
         for app in apps:
             groups.setdefault(app.owner, []).append(app)
@@ -424,9 +476,11 @@ class LibraryPage:
 class AddAppDialog(Adw.Dialog):
     """Find GitHub projects with .deb releases and add them to the Library."""
 
-    def __init__(self, win, page):
-        super().__init__(title="Add App", content_width=640, content_height=560)
-        self.win, self.page, self.found = win, page, []
+    def __init__(self, win, page, section=""):
+        super().__init__(title="Add to My Apps" if section == "mine" else "Add App",
+                         content_width=640, content_height=560)
+        self.win, self.page, self.section, self.found = win, page, section, []
+        self.where = "My Apps" if section == "mine" else "the Library"
         self.entry = Gtk.SearchEntry(hexpand=True, placeholder_text=(
             "github.com/owner/repo, github.com/orgs/name, or an app name"))
         self.entry.connect("activate", lambda *_: self.search())
@@ -435,7 +489,8 @@ class AddAppDialog(Adw.Dialog):
         bar.append(self.entry)
         bar.append(self.find_btn)
         hint = Gtk.Label(wrap=True, xalign=0, label=(
-            "A repository is added if its latest release has a .deb for this computer. "
+            "Paste a repository link, or your account link (github.com/your-name) to list all your "
+            "apps at once. A repository is added if its latest release has a .deb for this computer. "
             "An app name is looked up with Gemini (AI) and every answer is checked on GitHub."))
         hint.add_css_class("dim-label")
         hint.add_css_class("caption")
@@ -528,7 +583,9 @@ class AddAppDialog(Adw.Dialog):
             self.results.add(row)
         self.add_all_btn.set_visible(len(items) > 1)
         n = len(items)
+        known = notes and all(note.endswith("already in App Hub") for note in notes)
         self.set_status(f"Found {n} app{'s' if n != 1 else ''} with a .deb release." if n
+                        else "These apps are already in App Hub." if known
                         else "No installable .deb release found.")
 
     def add(self, entries, rows):
@@ -539,14 +596,14 @@ class AddAppDialog(Adw.Dialog):
 
         def work():
             for e in entries:
-                library.add(library.finish_entry(dict(e)))
+                library.add(library.finish_entry(dict(e), self.section))
             _idle(finished)
 
         def finished():
             for r in rows:
                 r.add_btn.set_label("Added")
             names = ", ".join(e["name"] for e in entries)
-            self.set_status(f"Added {names} to the Library.")
+            self.set_status(f"Added {names} to {self.where}.")
             self.page.reload()
             self.win.toast(f"Added {names}")
         _thread(work)
@@ -671,10 +728,12 @@ class AppsPage:
         self.system_rows = []
         self.widget, _ = scrolled_page(bar, self.installed_group, self.system_group, self.removed_group)
         self.updates = {}   # key -> (version, update), kept across quick reloads
+        self.loading = False
 
     def load(self, check_updates=True):
         self.status.set_title("Looking for installed apps…" if not self.rows else "Refreshing…")
         self.status.set_visible(True)
+        self.loading = True
 
         def work():
             cache = inventory.open_apt_cache()
@@ -733,6 +792,7 @@ class AppsPage:
         self.update_all_btn.set_label(f"Update All ({ready})" if ready else "Update All")
         self.update_all_btn.set_visible(final and bool(ready or sysup))
         self.status.set_visible(False)
+        self.loading = not final
         self.win.inventory_ready(apps)
         self.apply_filter()
 
@@ -754,6 +814,208 @@ class AppsPage:
 
     def update_all(self):
         self.win.confirm_update_everything()
+
+
+# --------------------------------------------------------------------------
+# Updates: every pending update, one by one or all at once
+# --------------------------------------------------------------------------
+
+CHANNEL_NAMES = {"hub": "GitHub", "apt": "Deb", "snap": "Snap", "flatpak": "Flatpak"}
+
+
+def notes_text(notes, limit=1500):
+    """GitHub release notes as plain text for a label."""
+    lines = []
+    for line in notes.replace("\r", "").splitlines():
+        line = line.rstrip()
+        stripped = line.lstrip("#").strip() if line.startswith("#") else line
+        if stripped.startswith(("* ", "- ")):
+            stripped = "• " + stripped[2:]
+        lines.append(stripped.replace("**", "").replace("`", ""))
+    text = "\n".join(lines).strip()
+    while "\n\n\n" in text:
+        text = text.replace("\n\n\n", "\n\n")
+    return text if len(text) <= limit else text[:limit].rsplit("\n", 1)[0] + "\n…"
+
+
+class UpdateRow(Adw.ExpanderRow):
+    def __init__(self, page, pending):
+        p = pending
+        super().__init__(title=GLib.markup_escape_text(p.label))
+        self.page, self.pending = page, p
+        when = ""
+        if p.kind == "hub" and p.obj.release and p.obj.release.published:
+            when = " · released " + p.obj.release.published[:10]
+        self.set_subtitle(GLib.markup_escape_text(f"{p.old or '?'}  →  {p.new}{when}"))
+        if p.kind == "hub":
+            icon = Gtk.Image(pixel_size=40)
+            set_hub_icon(icon, p.obj)
+        else:
+            icon = make_icon(p.obj.icon, 40)
+        self.add_prefix(icon)
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.progress = Gtk.ProgressBar(visible=False, valign=Gtk.Align.CENTER, width_request=110,
+                                        show_text=True)
+        box.append(self.progress)
+        box.append(badge(p.kind, CHANNEL_NAMES[p.kind]))
+        self.btn = text_button("Update", lambda: page.win.update_pending([p]), "suggested-action")
+        box.append(self.btn)
+        self.add_suffix(box)
+        # What's new: release notes for GitHub apps, the source for the others.
+        if p.kind == "hub":
+            rel = p.obj.release
+            body = notes_text(rel.notes) if rel.notes else "No release notes were published."
+            size = f"Download {core.human_size(rel.size)} · {rel.asset_name}" if rel.size else rel.asset_name
+            body = f"{body}\n\n{size}"
+            link = rel.url
+        else:
+            src = p.obj.source or p.obj.remote or ""
+            body = f"{CHANNEL_NAMES[p.kind]} package {p.obj.id}" + (f" from {src}" if src else "")
+            link = ""
+        lbl = Gtk.Label(label=body, xalign=0, wrap=True, selectable=True, margin_top=10,
+                        margin_bottom=10, margin_start=14, margin_end=14,
+                        wrap_mode=Pango.WrapMode.WORD_CHAR)
+        lbl.add_css_class("release-notes")
+        self.add_row(lbl)
+        if link:
+            web = Adw.ActionRow(title="Open release page", subtitle=GLib.markup_escape_text(link),
+                                activatable=True)
+            web.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
+            web.connect("activated", lambda *_: Gtk.UriLauncher.new(link).launch(page.win, None, None, None))
+            self.add_row(web)
+        self.sync()
+
+    def sync(self):
+        self.btn.set_sensitive(not self.page.win.busy)
+
+    def set_progress(self, done, total):
+        self.progress.set_visible(True)
+        if total:
+            self.progress.set_fraction(done / total)
+            self.progress.set_text(f"{core.human_size(done)} / {core.human_size(total)}")
+        else:
+            self.progress.pulse()
+
+
+class UpdatesPage:
+    def __init__(self, win):
+        self.win = win
+        self.rows, self.sys_rows, self.signature = [], [], None
+        self.checked_at = None
+
+        self.check_row = Adw.ActionRow(title="Checking for updates…")
+        self.check_spinner = Gtk.Spinner()
+        self.check_row.add_prefix(self.check_spinner)
+        self.check_btn = text_button("Check Now", self.check)
+        self.check_row.add_suffix(self.check_btn)
+        top = Adw.PreferencesGroup()
+        top.add(self.check_row)
+
+        self.apps_group = Adw.PreferencesGroup(
+            title="App Updates", description="Click an app to see what's new")
+        self.update_all_btn = text_button("Update All", win.confirm_update_everything, "suggested-action")
+        self.apps_group.set_header_suffix(self.update_all_btn)
+        self.sys_group = Adw.PreferencesGroup(
+            title="System Updates", description="Other packages from your software sources")
+        self.empty = Adw.StatusPage(icon_name="emblem-ok-symbolic", title="Everything is up to date",
+                                    description="Your apps and system have no pending updates")
+        self.empty.set_visible(False)
+        self.widget, _ = scrolled_page(top, self.empty, self.apps_group, self.sys_group)
+        self.sync()
+
+    def check(self):
+        """Check every app again: GitHub releases, then Deb, Snap and Flatpak."""
+        self.checked_at = None
+        self.win.home.refresh()
+        self.win.library_page.refresh()
+        self.win.apps_page.load()
+        self.sync()
+
+    def hub_progress(self):
+        apps = self.win.hub_apps()
+        done = sum(1 for a in apps if a.release is not None or a.error)
+        return done, len(apps)
+
+    def sync(self):
+        win = self.win
+        if not hasattr(win, "apps_page"):
+            return
+        pending = win.pending_updates()
+        sysup = win.system_upgrades
+        done, total = self.hub_progress()
+        checking = done < total or win.apps_page.loading or not win.inventory_loaded
+        if checking:
+            if done < total:
+                text = f"Checking GitHub releases… {done} of {total} apps"
+            else:
+                text = "Checking Deb, Snap and Flatpak apps…"
+            self.check_row.set_title(text)
+            self.check_row.set_subtitle(f"{len(pending)} update{'s' if len(pending) != 1 else ''} found so far")
+        else:
+            if self.checked_at is None:
+                self.checked_at = GLib.DateTime.new_now_local()
+            n = len(pending) + sum(1 for s in sysup if not s[3])
+            self.check_row.set_title(f"{n} update{'s' if n != 1 else ''} available" if n
+                                     else "No updates ready to install" if sysup
+                                     else "Everything is up to date")
+            self.check_row.set_subtitle(f"Checked {total} GitHub apps and "
+                                        f"{len(win.apps_page.apps)} installed apps at "
+                                        + self.checked_at.format("%H:%M"))
+        self.check_spinner.set_visible(checking)
+        self.check_spinner.set_spinning(checking)
+        self.check_btn.set_sensitive(not checking and not win.busy)
+
+        signature = tuple((p.kind, p.label, p.new) for p in pending) + tuple(sysup)
+        if signature != self.signature:
+            self.signature = signature
+            self.rebuild(pending, sysup)
+        for row in self.rows:
+            row.sync()
+        for row, btn in self.sys_rows:
+            if btn:
+                btn.set_sensitive(not win.busy)
+        self.update_all_btn.set_sensitive(not win.busy)
+        self.update_all_btn.set_visible(len(pending) + len(self.sys_rows) > 1)
+        self.empty.set_visible(not checking and not pending and not sysup)
+        self.apps_group.set_visible(bool(pending))
+        self.sys_group.set_visible(bool(sysup))
+        win.set_updates_badge(len(pending) + sum(1 for s in sysup if not s[3]))
+
+    def rebuild(self, pending, sysup):
+        for row in self.rows:
+            self.apps_group.remove(row)
+        for row, _ in self.sys_rows:
+            self.sys_group.remove(row)
+        self.rows = [UpdateRow(self, p) for p in pending]
+        for row in self.rows:
+            self.apps_group.add(row)
+        self.apps_group.set_title(f"App Updates ({len(pending)})")
+        self.sys_rows = []
+        for name, old, new, phased in sysup:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(name),
+                                subtitle=GLib.markup_escape_text(f"{old}  →  {new}"))
+            row.add_prefix(Gtk.Image(icon_name="package-x-generic-symbolic", pixel_size=24))
+            box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+            box.append(badge("apt", "Deb"))
+            p = updates.Pending(name, "apt", old, new, inventory.SysApp("apt", name, name, version=old,
+                                                                         update=new))
+            if phased:
+                lbl = Gtk.Label(label="Staged rollout")
+                lbl.add_css_class("dim-label")
+                box.append(lbl)
+                btn = text_button("Install Early", lambda p=p: self.win.update_pending([p]))
+                btn.set_tooltip_text("Ubuntu rolls this update out gradually to catch problems first; "
+                                     "it arrives here on its own later.")
+            else:
+                btn = text_button("Update", lambda p=p: self.win.update_pending([p]), "suggested-action")
+            box.append(btn)
+            row.add_suffix(box)
+            self.sys_rows.append((row, btn))
+            self.sys_group.add(row)
+        self.sys_group.set_title(f"System Updates ({len(sysup)})")
+
+    def row_for(self, app):
+        return next((r for r in self.rows if r.pending.obj is app), None)
 
 
 # --------------------------------------------------------------------------
@@ -1027,7 +1289,7 @@ class CleanerPage:
 
 class Window(Adw.ApplicationWindow):
     def __init__(self, application):
-        super().__init__(application=application, title="App Hub", default_width=900, default_height=720)
+        super().__init__(application=application, title="App Hub", default_width=1040, default_height=740)
         self.busy = False
         self.installed = {}          # inventory key -> SysApp
         self.inventory_loaded = False
@@ -1045,11 +1307,9 @@ class Window(Adw.ApplicationWindow):
         self.stack = Adw.ViewStack()
         header.set_title_widget(Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE))
         header.pack_start(flat_button("view-refresh-symbolic", "Refresh", self.refresh_current))
-        deb_btn = Gtk.Button(tooltip_text="Install a .deb file")
-        deb_btn.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Install .deb"))
-        deb_btn.connect("clicked", lambda *_: self.pick_deb())
-        header.pack_start(deb_btn)
+        header.pack_start(flat_button("document-open-symbolic", "Install a .deb file", self.pick_deb))
         menu = Gio.Menu()
+        menu.append("Install .deb File…", "win.install-deb")
         menu.append("Update Everything…", "win.update-everything")
         menu.append("Activity Log", "win.log")
         menu.append("Preferences", "win.preferences")
@@ -1064,7 +1324,8 @@ class Window(Adw.ApplicationWindow):
         view.add_top_bar(self.everything_banner)
 
         for name, cb in (("log", self.show_log), ("preferences", self.show_preferences),
-                         ("update-everything", self.confirm_update_everything)):
+                         ("update-everything", self.confirm_update_everything),
+                         ("install-deb", self.pick_deb)):
             act = Gio.SimpleAction.new(name, None)
             act.connect("activate", lambda *_a, f=cb: f())
             self.add_action(act)
@@ -1072,18 +1333,65 @@ class Window(Adw.ApplicationWindow):
         self.home = HomePage(self)
         self.library_page = LibraryPage(self)
         self.apps_page = AppsPage(self)
+        self.updates_page = UpdatesPage(self)
         self.ai_page = AIPage(self)
         self.cleaner_page = CleanerPage(self)
         self.stack.add_titled_with_icon(self.home.widget, "home", "My Apps", "starred-symbolic")
+        self.updates_tab = self.stack.add_titled_with_icon(self.updates_page.widget, "updates", "Updates",
+                                                           "software-update-available-symbolic")
         self.stack.add_titled_with_icon(self.library_page.widget, "library", "Library", "view-app-grid-symbolic")
         self.stack.add_titled_with_icon(self.apps_page.widget, "apps", "All Apps", "view-grid-symbolic")
         self.stack.add_titled_with_icon(self.ai_page.widget, "ai", "AI Install", "system-search-symbolic")
         self.stack.add_titled_with_icon(self.cleaner_page.widget, "cleaner", "Cleaner", "user-trash-symbolic")
         self.stack.connect("notify::visible-child-name", self.on_page)
         view.set_content(self.stack)
+        view.add_bottom_bar(self.make_disk_bar())
         self.toasts.set_child(view)
         self.set_content(self.toasts)
         self.apps_page.load()
+        self.update_disk()
+        GLib.timeout_add_seconds(30, lambda: self.update_disk() or True)
+
+    # --- free space ---
+
+    def make_disk_bar(self):
+        bar = Gtk.Box(spacing=10)
+        bar.add_css_class("disk-bar")
+        bar.append(Gtk.Image(icon_name="drive-harddisk-symbolic"))
+        self.disk_label = Gtk.Label(xalign=0)
+        bar.append(self.disk_label)
+        self.disk_level = Gtk.ProgressBar(width_request=180, valign=Gtk.Align.CENTER)
+        self.disk_level.add_css_class("disk-level")
+        bar.append(self.disk_level)
+        self.home_label = Gtk.Label(xalign=0, visible=False)
+        self.home_label.add_css_class("dim-label")
+        bar.append(self.home_label)
+        bar.append(Gtk.Box(hexpand=True))
+        clean = Gtk.Button(label="Free Up Space", tooltip_text="Open the Cleaner")
+        clean.add_css_class("flat")
+        clean.connect("clicked", lambda *_: self.stack.set_visible_child_name("cleaner"))
+        bar.append(clean)
+        return bar
+
+    def update_disk(self):
+        free, total = disk_usage("/")
+        if not total:
+            return
+        used = 1 - free / total
+        self.disk_label.set_markup(f"Ubuntu: <b>{core.human_size(free)} free</b> of {core.human_size(total)}")
+        self.disk_level.set_fraction(used)
+        for cls, on in (("warning", 0.85 <= used < 0.95), ("error", used >= 0.95)):
+            (self.disk_level.add_css_class if on else self.disk_level.remove_css_class)(cls)
+        self.disk_level.set_tooltip_text(f"{used:.0%} used ({core.human_size(total - free)})")
+        home = os.path.expanduser("~")
+        try:
+            separate = os.stat(home).st_dev != os.stat("/").st_dev
+        except OSError:
+            separate = False
+        if separate:
+            hfree, htotal = disk_usage(home)
+            self.home_label.set_text(f"Home: {core.human_size(hfree)} free of {core.human_size(htotal)}")
+        self.home_label.set_visible(separate)
 
     # --- shared UI ---
 
@@ -1138,12 +1446,32 @@ class Window(Adw.ApplicationWindow):
         dialog.connect("closed", on_closed)
         dialog.present(self)
 
-    def pending_updates(self):
+    def hub_apps(self):
         hub = list(self.home.apps) if hasattr(self, "home") else []
         if hasattr(self, "library_page"):
             hub += self.library_page.apps
+        return hub
+
+    def pending_updates(self):
         system = self.apps_page.apps if hasattr(self, "apps_page") else []
-        return updates.collect(hub, system)
+        return updates.collect(self.hub_apps(), system)
+
+    def set_updates_badge(self, n):
+        if hasattr(self, "updates_tab"):
+            self.updates_tab.set_badge_number(n)
+            self.updates_tab.set_needs_attention(n > 0)
+
+    def update_pending(self, pending):
+        """Update the given items (one password prompt), with download progress on their rows."""
+        if self.busy or not pending:
+            return
+
+        def progress(app, done, total):
+            row = self.updates_page.row_for(app)
+            if row:
+                _idle(row.set_progress, done, total)
+        title = f"Update {pending[0].label}" if len(pending) == 1 else f"Update {len(pending)} apps"
+        self.run_job(title, lambda log: updates.run(pending, log, progress=progress))
 
     def sync_update_everything(self):
         if not hasattr(self, "everything_banner"):
@@ -1156,7 +1484,10 @@ class Window(Adw.ApplicationWindow):
         if m:
             parts.append(f"{m} system update{'s' if m != 1 else ''}")
         self.everything_banner.set_title(" and ".join(parts) + " available" if parts else "")
-        self.everything_banner.set_revealed(bool(parts) and not self.busy)
+        on_updates = self.stack.get_visible_child_name() == "updates"
+        self.everything_banner.set_revealed(bool(parts) and not self.busy and not on_updates)
+        if hasattr(self, "updates_page"):
+            self.updates_page.sync()
 
     def confirm_update_everything(self):
         pending = self.pending_updates()
@@ -1213,6 +1544,7 @@ class Window(Adw.ApplicationWindow):
             page.sync()
 
     def on_page(self, *_):
+        self.sync_update_everything()
         if self.stack.get_visible_child_name() == "cleaner" and not self.cleaner_page.scanned:
             self.cleaner_page.scan()
 
@@ -1224,6 +1556,8 @@ class Window(Adw.ApplicationWindow):
             self.library_page.refresh()
         elif name == "apps":
             self.apps_page.load()
+        elif name == "updates":
+            self.updates_page.check()
         elif name == "cleaner":
             self.cleaner_page.scan()
 
@@ -1280,6 +1614,7 @@ class Window(Adw.ApplicationWindow):
         self.home.sync()
         self.library_page.after_job()
         self.apps_page.load(check_updates=False)
+        self.update_disk()
 
     # --- actions ---
 
@@ -1468,6 +1803,8 @@ class Window(Adw.ApplicationWindow):
 class Application(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
+        # Light/dark and accent come from the system settings.
+        self.get_style_manager().set_color_scheme(Adw.ColorScheme.DEFAULT)
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", self.on_about)
         self.add_action(about)

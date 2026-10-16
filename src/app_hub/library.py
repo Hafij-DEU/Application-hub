@@ -58,8 +58,9 @@ def entries():
     """Library entries: shipped defaults (minus removed ones) then the user's own."""
     user = _user()
     removed = set(user["removed"])
+    mine = {e["id"]: e for e in user["apps"]}   # the user's copy wins (e.g. moved to My Apps)
     out, seen = [], set()
-    for e in _read(DEFAULT).get("apps", []) + user["apps"]:
+    for e in [mine.get(d["id"], d) for d in _read(DEFAULT).get("apps", [])] + user["apps"]:
         if e["id"] in removed or e["id"] in seen:
             continue
         seen.add(e["id"])
@@ -88,9 +89,12 @@ def add(entry):
 
 
 def remove(app_id):
+    """Remove an app from My Apps or the Library. A default Library app taken out of
+    My Apps goes back to the Library."""
     user = _user()
+    moved = any(e["id"] == app_id and e.get("section") == "mine" for e in user["apps"])
     user["apps"] = [e for e in user["apps"] if e["id"] != app_id]
-    if any(e["id"] == app_id for e in _read(DEFAULT).get("apps", [])):
+    if not moved and any(e["id"] == app_id for e in _read(DEFAULT).get("apps", [])):
         user["removed"] = sorted(set(user["removed"]) | {app_id})
     _save_user(user)
 
@@ -268,9 +272,12 @@ def owner_repos(owner, limit=60):
     return out[:limit]
 
 
-def finish_entry(entry):
-    """Download the icon and keep only the fields the Library stores."""
+def finish_entry(entry, section=""):
+    """Download the icon and keep only the fields the Library stores.
+    section "mine" shows the app in My Apps instead of the Library."""
     icon = save_icon(entry["id"], entry.pop("icon_url", ""))
     keep = {k: entry[k] for k in ("id", "name", "summary", "repo", "package", "desktop", "owner")}
     keep["icon"] = icon
+    if section:
+        keep["section"] = section
     return keep

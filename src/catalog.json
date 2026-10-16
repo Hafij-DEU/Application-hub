@@ -6,7 +6,8 @@
       "summary": "This app: install, update and uninstall apps",
       "repo": "Hafij-DEU/Application-hub",
       "package": "app-hub",
-      "desktop": "io.github.hafij_bge.AppHub.desktop"
+      "desktop": "io.github.hafij_bge.AppHub.desktop",
+      "section": "self"
     },
     {
       "id": "craft-suite",

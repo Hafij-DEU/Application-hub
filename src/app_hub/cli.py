@@ -221,8 +221,9 @@ def cmd_add(args):
     if not (owner and repo):
         raise core.HubError("give a GitHub repository: owner/repo or https://github.com/owner/repo")
     entry = library.resolve_repo(f"{owner}/{repo}")
-    library.add(library.finish_entry(entry))
-    print(f"Added {entry['name']} ({entry['repo']}, package {entry['package']}) to the Library.")
+    library.add(library.finish_entry(entry, "mine" if args.mine else ""))
+    where = "My Apps" if args.mine else "the Library"
+    print(f"Added {entry['name']} ({entry['repo']}, package {entry['package']}) to {where}.")
     print(f"Install it with: app-hub install {entry['id']}")
     return 0
 
@@ -272,6 +273,7 @@ def main(argv=None):
     p.set_defaults(func=cmd_update_all)
     p = sub.add_parser("add", help="add a GitHub project with .deb releases to the Library")
     p.add_argument("repo", help="owner/repo or https://github.com/owner/repo")
+    p.add_argument("--mine", action="store_true", help="show it in My Apps instead of the Library")
     p.set_defaults(func=cmd_add)
     p = sub.add_parser("favorites", help="list favorite apps")
     p.set_defaults(func=cmd_favorites)

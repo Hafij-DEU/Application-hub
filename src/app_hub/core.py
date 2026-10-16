@@ -51,6 +51,8 @@ class Release:
     size: int = 0
     sha256: str = ""
     sums_url: str = ""
+    notes: str = ""          # release notes (Markdown, as written on GitHub)
+    published: str = ""      # ISO date
 
 
 @dataclass
@@ -67,6 +69,7 @@ class App:
     installed_as: str = ""                         # package actually installed
     icon: str = ""                                 # icon file (Library apps)
     owner: str = ""                                # Library group; "" = My Apps
+    section: str = ""                              # "self" = App Hub itself, "mine" = added to My Apps
     release: Release | None = None
     error: str = ""
 
@@ -301,7 +304,8 @@ def pick_asset(assets, pattern="", arch=None, distro=None):
 def fetch_release(app):
     data = _get_json(f"{API}/repos/{app.repo}/releases/latest")
     tag = data.get("tag_name", "")
-    rel = Release(tag=tag, version=clean_version(tag), url=data.get("html_url", app.repo_url))
+    rel = Release(tag=tag, version=clean_version(tag), url=data.get("html_url", app.repo_url),
+                  notes=(data.get("body") or "").strip(), published=data.get("published_at") or "")
     assets = data.get("assets", [])
     asset = pick_asset(assets, app.asset_pattern)
     if asset:

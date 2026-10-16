@@ -2,12 +2,15 @@
 
 App manager for Ubuntu and Debian: install, update and uninstall apps from GitHub releases,
 apt, Snap, Flatpak and AppImage, from one window. Download the `.deb` from
-[Releases](https://github.com/Hafij-DEU/Application-hub/releases). App Hub lists itself in My Apps,
-so it updates itself from the same page.
+[Releases](https://github.com/Hafij-DEU/Application-hub/releases). App Hub shows itself in its own section
+above My Apps and updates itself from the same page.
 
 App manager for Ubuntu/Debian. Tabs:
 
 * **My Apps**: installs and updates these apps from their latest GitHub release, plus your **Favorites**.
+  **Add App** (in the My Apps header) adds your own app: paste its GitHub link, or your account
+  link (`github.com/your-name`) to list all your projects that publish a `.deb`. Added apps are
+  kept in `~/.config/app-hub/library.json`; `app-hub add --mine owner/repo` does the same.
 
   | App | Repo | Package |
   |---|---|---|
@@ -18,6 +21,10 @@ App manager for Ubuntu/Debian. Tabs:
   | Extendo (second monitor) | Hafij-BGE/Second-monitor | `extendo` |
   | Astra Player (video player, was Kiln Player) | Hafij-DEU/video-player | `astra-player` |
 
+* **Updates**: checks every app (GitHub releases of My Apps and Library, Deb, Snap, Flatpak and
+  system packages) and lists each pending update with old → new version, its channel and, for
+  GitHub apps, the release notes. Update one at a time with its own button, or all at once.
+  The tab shows how many updates are waiting.
 * **Library**: apps from any GitHub project that publishes `.deb` releases, grouped by GitHub
   owner, with the same Install / Update / Open / Uninstall as My Apps. It starts with 13 apps
   (PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, DesignCraft, WordCraft,
@@ -50,13 +57,16 @@ App manager for Ubuntu/Debian. Tabs:
   its name matches a removed app, no installed app uses that name, and nothing wrote to it after
   the app was removed.
 
-**Install .deb** (header button, or double-click a `.deb` and choose App Hub) shows the package,
+The bar at the bottom shows the free space on the Ubuntu disk (and on `/home` when it is a
+separate partition), with **Free Up Space** to open the Cleaner.
+
+**Install .deb** (header button or menu, or double-click a `.deb` and choose App Hub) shows the package,
 version change and size, then installs it with `apt`, so dependencies come along.
 
 ## Install
 
 ```
-sudo apt install ./app-hub_1.4.1_all.deb
+sudo apt install ./app-hub_1.5.0_all.deb
 ```
 
 ## Terminal
