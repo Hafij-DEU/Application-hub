@@ -57,6 +57,12 @@ App manager for Ubuntu/Debian. Tabs:
   its name matches a removed app, no installed app uses that name, and nothing wrote to it after
   the app was removed.
 
+**GitHub sign-in**: without it GitHub answers only 60 update checks per hour per network. App Hub
+uses your GitHub CLI login (`gh auth login`) when `gh` is installed, or a token saved under
+Menu ▸ Preferences (it needs no permissions), and then gets 5000. When GitHub cannot be asked,
+App Hub shows the last answer and says so. If an app's newest release has no `.deb` for this
+system, App Hub offers the newest release that has one.
+
 The bar at the bottom shows the free space on the Ubuntu disk (and on `/home` when it is a
 separate partition), with **Free Up Space** to open the Cleaner.
 
@@ -66,7 +72,7 @@ version change and size, then installs it with `apt`, so dependencies come along
 ## Install
 
 ```
-sudo apt install ./app-hub_1.5.0_all.deb
+sudo apt install ./app-hub_1.5.1_all.deb
 ```
 
 ## Terminal

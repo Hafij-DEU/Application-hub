@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -26,6 +27,8 @@ CACHE_DIR = os.path.join(
 
 API = "https://api.github.com"
 USER_AGENT = f"app-hub/{__version__}"
+SETTINGS = os.path.join(os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+                        "app-hub", "settings.json")
 
 OTHER_ARCH_TOKENS = {
     "amd64": ("arm64", "aarch64", "armhf", "armv7", "i386", "i686", "ppc64el", "s390x", "riscv64"),
@@ -53,6 +56,8 @@ class Release:
     sums_url: str = ""
     notes: str = ""          # release notes (Markdown, as written on GitHub)
     published: str = ""      # ISO date
+    stale: float = 0         # nonzero: GitHub could not be asked; cached answer (time, or -1 = unknown)
+    skipped: str = ""        # newer tag without a .deb for this system
 
 
 @dataclass
@@ -105,12 +110,20 @@ class App:
             parts.append("checking…")
         elif not self.release.asset_url:
             parts.append(f"{self.release.tag} has no .deb for this system")
+        elif self.installed and not self.update_available and is_newer(
+                clean_version(self.installed), self.release.version):
+            parts.append("newer than the latest release with a .deb" if self.release.skipped
+                         else "newer than the latest release")
         elif self.update_available:
             parts.append(f"update {self.release.version} available")
         elif self.installed:
             parts.append("up to date")
         else:
             parts.append(f"latest {self.release.version} · {human_size(self.release.size)}")
+        if self.release and self.release.stale:
+            when = ("an earlier check" if self.release.stale < 0 else
+                    time.strftime("%d %b %H:%M", time.localtime(self.release.stale)))
+            parts.append(f"could not ask GitHub (limit or offline), info from {when}")
         return " · ".join(parts)
 
 
@@ -208,9 +221,44 @@ def human_size(n):
 
 # --- GitHub ---------------------------------------------------------------
 
+_token = None
+
+
+def _settings():
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def github_token():
+    """Token for api.github.com: GITHUB_TOKEN/GH_TOKEN, the one saved in Preferences, or the
+    GitHub CLI login (gh auth token). Signed-in requests get 5000/hour instead of 60."""
+    global _token
+    if _token is None:
+        settings = _settings()
+        _token = (os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+                  or settings.get("github_token", "").strip())
+        if not _token and settings.get("use_gh_login", True) and shutil.which("gh"):
+            try:
+                r = subprocess.run(["gh", "auth", "token", "--hostname", "github.com"],
+                                   capture_output=True, text=True, timeout=5)
+                _token = r.stdout.strip() if r.returncode == 0 else ""
+            except (OSError, subprocess.SubprocessError):
+                _token = ""
+    return _token
+
+
+def forget_token():
+    """Re-read the token next time (after Preferences change)."""
+    global _token
+    _token = None
+
+
 def _request(url, accept="application/vnd.github+json"):
     headers = {"User-Agent": USER_AGENT, "Accept": accept}
-    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    token = github_token()
     if token and url.startswith(API):
         headers["Authorization"] = f"Bearer {token}"
     return urllib.request.Request(url, headers=headers)
@@ -231,7 +279,7 @@ def _api_cache_load():
 def _api_cache_store(url, etag, data):
     with _api_lock:
         cache = _api_cache_load()
-        cache[url] = {"etag": etag, "data": data}
+        cache[url] = {"etag": etag, "data": data, "time": time.time()}
         os.makedirs(CACHE_DIR, exist_ok=True)
         tmp = f"{API_CACHE}.{threading.get_ident()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -239,9 +287,22 @@ def _api_cache_store(url, etag, data):
         os.replace(tmp, API_CACHE)
 
 
+class Stale(dict):
+    """A cached API answer used because GitHub could not be asked (rate limit, offline)."""
+    since = 0.0
+    reason = ""
+
+
+def _stale(cached, reason):
+    out = Stale(cached["data"]) if isinstance(cached["data"], dict) else cached["data"]
+    if isinstance(out, Stale):
+        out.since, out.reason = cached.get("time") or -1.0, reason
+    return out
+
+
 def _get_json(url):
     """GET a GitHub API URL. Uses ETags: unchanged answers (304) don't count
-    against the 60 requests/hour limit, and the cached copy is used when limited."""
+    against the rate limit, and the cached copy is used (marked Stale) when limited."""
     with _api_lock:
         cached = _api_cache_load().get(url)
     req = _request(url)
@@ -254,17 +315,18 @@ def _get_json(url):
             return data
     except urllib.error.HTTPError as e:
         if e.code == 304 and cached:
+            _api_cache_store(url, cached.get("etag", ""), cached["data"])  # confirmed fresh now
             return cached["data"]
         if e.code == 404:
             raise HubError("no release published") from None
         if e.code in (403, 429):
             if cached:
-                return cached["data"]
-            raise HubError("GitHub rate limit hit, try again later") from None
+                return _stale(cached, "GitHub limit reached")
+            raise HubError("GitHub limit reached, try again later or sign in (Preferences)") from None
         raise HubError(f"GitHub error {e.code}") from None
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         if cached:
-            return cached["data"]
+            return _stale(cached, "offline")
         reason = getattr(e, "reason", e)
         raise HubError(f"offline? ({reason})") from None
 
@@ -303,9 +365,28 @@ def pick_asset(assets, pattern="", arch=None, distro=None):
 
 def fetch_release(app):
     data = _get_json(f"{API}/repos/{app.repo}/releases/latest")
+    skipped = ""
+    if not pick_asset(data.get("assets", []), app.asset_pattern):
+        # The newest release may ship only other platforms (e.g. a Windows-only fix):
+        # use the newest stable release that has a .deb for this system.
+        try:
+            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=10")
+        except HubError:
+            recent = []
+        for r in recent if isinstance(recent, list) else []:
+            if not r.get("draft") and not r.get("prerelease") and pick_asset(r.get("assets", []),
+                                                                             app.asset_pattern):
+                skipped = data.get("tag_name", "")
+                stale = data if isinstance(data, Stale) else None
+                data = r
+                if stale:
+                    data = Stale(r)
+                    data.since, data.reason = stale.since, stale.reason
+                break
     tag = data.get("tag_name", "")
     rel = Release(tag=tag, version=clean_version(tag), url=data.get("html_url", app.repo_url),
-                  notes=(data.get("body") or "").strip(), published=data.get("published_at") or "")
+                  notes=(data.get("body") or "").strip(), published=data.get("published_at") or "",
+                  stale=data.since if isinstance(data, Stale) else 0, skipped=skipped)
     assets = data.get("assets", [])
     asset = pick_asset(assets, app.asset_pattern)
     if asset:

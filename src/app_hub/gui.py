@@ -958,9 +958,15 @@ class UpdatesPage:
             self.check_row.set_title(f"{n} update{'s' if n != 1 else ''} available" if n
                                      else "No updates ready to install" if sysup
                                      else "Everything is up to date")
+            stale = sum(1 for a in win.hub_apps() if a.release and a.release.stale)
+            failed = sum(1 for a in win.hub_apps() if a.error)
+            note = ""
+            if stale or failed:
+                note = (f" · GitHub did not answer for {stale + failed} app"
+                        f"{'s' if stale + failed != 1 else ''}; sign in under Menu ▸ Preferences or try later")
             self.check_row.set_subtitle(f"Checked {total} GitHub apps and "
                                         f"{len(win.apps_page.apps)} installed apps at "
-                                        + self.checked_at.format("%H:%M"))
+                                        + self.checked_at.format("%H:%M") + note)
         self.check_spinner.set_visible(checking)
         self.check_spinner.set_spinning(checking)
         self.check_btn.set_sensitive(not checking and not win.busy)
@@ -1435,13 +1441,33 @@ class Window(Adw.ApplicationWindow):
             "https://aistudio.google.com/apikey").launch(self, None, None, None))
         group.add(link)
         page.add(group)
+        gh = Adw.PreferencesGroup(
+            title="GitHub",
+            description="Without sign-in GitHub answers 60 update checks per hour per network; "
+                        "signed in it answers 5000. The token needs no permissions.")
+        gh_login = Adw.SwitchRow(title="Use my GitHub CLI login",
+                                 subtitle="Takes the token from “gh auth login” when gh is installed",
+                                 active=settings.get("use_gh_login", True))
+        gh_token = Adw.PasswordEntryRow(title="Personal access token (optional)",
+                                        text=settings.get("github_token", ""))
+        gh.add(gh_login)
+        gh.add(gh_token)
+        tok_link = Adw.ActionRow(title="Create a token", subtitle="github.com/settings/personal-access-tokens", activatable=True)
+        tok_link.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
+        tok_link.connect("activated", lambda *_: Gtk.UriLauncher.new(
+            "https://github.com/settings/personal-access-tokens/new").launch(self, None, None, None))
+        gh.add(tok_link)
+        page.add(gh)
         dialog.add(page)
 
         def on_closed(*_):
             data = ai.load_settings()
             data["gemini_api_key"] = key_row.get_text().strip()
             data["gemini_model"] = model_row.get_text().strip() or ai.DEFAULT_MODEL
+            data["github_token"] = gh_token.get_text().strip()
+            data["use_gh_login"] = gh_login.get_active()
             ai.save_settings(data)
+            core.forget_token()
             self.ai_page.sync_key()
         dialog.connect("closed", on_closed)
         dialog.present(self)
