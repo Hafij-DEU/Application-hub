@@ -1,0 +1,232 @@
+#!/usr/bin/python3 -Is
+"""Privileged half of App Hub, started through pkexec.
+
+  app-hub-helper [--simulate] PLAN
+
+PLAN is a JSON list of steps, run in order, stopping at the first failure:
+
+  ["install-deb", PACKAGE_OR_EMPTY, "/path/file.deb", ...]  (PACKAGE, PATH pairs)
+  ["apt-install", PKG, ...]      ["apt-upgrade", PKG, ...]
+  ["apt-remove", PKG, ...]       ["apt-purge", PKG, ...]
+  ["apt-autoremove"]             ["apt-clean"]
+  ["apt-refresh"]  (apt-get update)   ["apt-upgrade-all", "phased"?]  (apt-get upgrade)
+  ["keep-going"]   later steps still run after a failure; failures are listed at the end
+  ["snap-install", NAME, CHANNEL, "classic"|""]
+  ["snap-refresh", NAME]         ["snap-remove", NAME, REVISION_OR_EMPTY, "purge"|""]
+  ["flatpak-install", REMOTE, REF]   ["flatpak-update", REF]
+  ["flatpak-uninstall", REF, "delete-data"|""]   ["flatpak-unused"]
+
+Flatpak steps act on the system installation. Every name is checked
+against a strict pattern so nothing can be passed as an option.
+--simulate prints the commands (and runs apt-get -s) without root.
+"""
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+CACHE = "/var/cache/app-hub"
+ENV = {
+    "PATH": "/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin",
+    "DEBIAN_FRONTEND": "noninteractive",
+    "LANG": "C.UTF-8",
+    "XDG_DATA_DIRS": "/var/lib/flatpak/exports/share:/usr/local/share:/usr/share",
+}
+APT = ["apt-get", "-y", "-o", "DPkg::Lock::Timeout=120",
+       "-o", "Dpkg::Options::=--force-confdef", "-o", "Dpkg::Options::=--force-confold"]
+
+PKG = re.compile(r"[a-z0-9][a-z0-9+.-]*(:[a-z0-9]+)?")
+SNAP = re.compile(r"[a-z0-9][a-z0-9-]*")
+CHANNEL = re.compile(r"[a-z0-9][a-z0-9./-]*")
+REV = re.compile(r"x?[0-9]+")
+REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]*){0,3}(//[A-Za-z0-9._-]+)?")
+REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def die(msg, code=2):
+    print(f"app-hub-helper: {msg}", file=sys.stderr, flush=True)
+    sys.exit(code)
+
+
+def check(pattern, value, what):
+    if not isinstance(value, str) or not pattern.fullmatch(value):
+        die(f"invalid {what}: {value!r}")
+    return value
+
+
+class Runner:
+    def __init__(self, simulate):
+        self.simulate = simulate
+        self.keep_going = False
+        self.workdir = None
+
+    def run(self, cmd, apt=False):
+        if apt and self.simulate:
+            cmd = cmd[:1] + ["-s"] + cmd[1:]
+        print("+ " + " ".join(cmd), flush=True)
+        if self.simulate and not apt:
+            return 0
+        return subprocess.call(cmd, env=ENV, stdin=subprocess.DEVNULL)
+
+    def flatpak_installed(self, ref):
+        name, _, branch = ref.partition("//")
+        cmd = ["flatpak", "info", "--system", name] + ([branch] if branch else [])
+        return subprocess.call(cmd, env=ENV, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+    def flatpak(self, cmd, ref=None, want_installed=None):
+        """Run a flatpak command. As root there is no session bus, so flatpak can
+        exit 1 after doing its work ("Cannot autolaunch D-Bus"); trust the real state."""
+        print("+ " + " ".join(cmd), flush=True)
+        if self.simulate:
+            return 0
+        proc = subprocess.Popen(cmd, env=ENV, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+        errors = []
+        for line in proc.stdout:
+            print(line, end="", flush=True)
+            if line.lower().startswith("error:"):
+                errors.append(line)
+        rc = proc.wait()
+        if rc == 0:
+            return 0
+        if ref and want_installed is not None:
+            ok = self.flatpak_installed(ref) == want_installed
+        else:
+            ok = bool(errors) and all("D-Bus" in e for e in errors)
+        if ok:
+            print("app-hub-helper: flatpak finished its work; ignoring its session D-Bus error", flush=True)
+            return 0
+        return rc
+
+    def stage(self, pkg, path):
+        if not isinstance(path, str) or not path.endswith(".deb") or not os.path.isfile(path):
+            die(f"not a .deb file: {path!r}")
+        if self.workdir is None:
+            if not self.simulate:
+                os.makedirs(CACHE, mode=0o755, exist_ok=True)
+            self.workdir = tempfile.mkdtemp(prefix="install-", dir=None if self.simulate else CACHE)
+            os.chmod(self.workdir, 0o755)  # apt's _apt sandbox user must read the files
+        # Copy first, then check the copy, so the file cannot change after the check.
+        dest = os.path.join(self.workdir, f"{len(os.listdir(self.workdir))}.deb")
+        with open(path, "rb") as src, open(dest, "xb") as out:
+            shutil.copyfileobj(src, out)
+        os.chmod(dest, 0o644)
+        r = subprocess.run(["dpkg-deb", "-f", dest, "Package"], capture_output=True, text=True, env=ENV)
+        if r.returncode != 0:
+            die(f"{os.path.basename(path)} is not a valid .deb")
+        if pkg and r.stdout.strip() != pkg:
+            die(f"{os.path.basename(path)} contains package {r.stdout.strip()!r}, expected {pkg!r}")
+        return dest
+
+    def step(self, op, args):
+        if op == "install-deb":
+            if len(args) % 2 or not args:
+                die("install-deb needs PACKAGE, PATH pairs")
+            files = []
+            for pkg, path in zip(args[::2], args[1::2]):
+                if pkg:
+                    check(PKG, pkg, "package")
+                files.append(self.stage(pkg, path))
+            return self.run(APT + ["install", *files], apt=True)
+        if op in ("apt-install", "apt-upgrade", "apt-remove", "apt-purge"):
+            if not args:
+                die(f"{op} needs packages")
+            pkgs = [check(PKG, p, "package") for p in args]
+            verb = {"apt-install": ["install"], "apt-upgrade": ["install", "--only-upgrade"],
+                    "apt-remove": ["remove"], "apt-purge": ["purge"]}[op]
+            return self.run(APT + verb + pkgs, apt=True)
+        if op == "apt-autoremove":
+            return self.run(APT + ["autoremove"], apt=True)
+        if op == "apt-clean":
+            return self.run(["apt-get", "clean"])
+        if op == "apt-refresh":
+            return self.run(["apt-get", "-o", "DPkg::Lock::Timeout=120", "update"])
+        if op == "apt-upgrade-all":
+            extra = ["-o", "APT::Get::Always-Include-Phased-Updates=true"] if args == ["phased"] else []
+            if args and args != ["phased"]:
+                die("apt-upgrade-all takes only 'phased'")
+            return self.run(APT + extra + ["upgrade", "--with-new-pkgs"], apt=True)
+        if op == "keep-going":
+            self.keep_going = True
+            return 0
+        if op == "snap-install":
+            name, channel, classic = args
+            cmd = ["snap", "install", check(SNAP, name, "snap")]
+            if channel:
+                cmd.append("--channel=" + check(CHANNEL, channel, "channel"))
+            if classic == "classic":
+                cmd.append("--classic")
+            return self.run(cmd)
+        if op == "snap-refresh":
+            return self.run(["snap", "refresh", check(SNAP, args[0], "snap")])
+        if op == "snap-remove":
+            name, rev, purge = args
+            cmd = ["snap", "remove", check(SNAP, name, "snap")]
+            if rev:
+                cmd.append("--revision=" + check(REV, rev, "revision"))
+            if purge == "purge":
+                cmd.append("--purge")
+            return self.run(cmd)
+        if op == "flatpak-install":
+            remote, ref = args
+            return self.flatpak(["flatpak", "install", "--system", "-y", "--noninteractive",
+                                 check(REMOTE, remote, "remote"), check(REF, ref, "ref")], ref, True)
+        if op == "flatpak-update":
+            return self.flatpak(["flatpak", "update", "--system", "-y", "--noninteractive",
+                                 check(REF, args[0], "ref")])
+        if op == "flatpak-uninstall":
+            ref, data = args
+            cmd = ["flatpak", "uninstall", "--system", "-y", "--noninteractive"]
+            if data == "delete-data":
+                cmd.append("--delete-data")
+            return self.flatpak(cmd + [check(REF, ref, "ref")], ref, False)
+        if op == "flatpak-unused":
+            return self.flatpak(["flatpak", "uninstall", "--system", "--unused", "-y", "--noninteractive"])
+        die(f"unknown step: {op!r}")
+
+    def cleanup(self):
+        if self.workdir:
+            shutil.rmtree(self.workdir, ignore_errors=True)
+
+
+def main(argv):
+    simulate = "--simulate" in argv
+    argv = [a for a in argv if a != "--simulate"]
+    if not simulate and os.geteuid() != 0:
+        die("must run as root (use pkexec)")
+    if len(argv) != 1:
+        die("usage: app-hub-helper [--simulate] PLAN_JSON")
+    try:
+        plan = json.loads(argv[0])
+        assert isinstance(plan, list) and all(isinstance(s, list) and s for s in plan)
+    except (ValueError, AssertionError):
+        die("PLAN must be a JSON list of steps")
+
+    runner = Runner(simulate)
+    failed = []
+    try:
+        for op, *args in plan:
+            try:
+                rc = runner.step(op, args)
+            except ValueError:
+                die(f"wrong arguments for {op}")
+            if rc != 0:
+                print(f"app-hub-helper: step {op} {' '.join(args)[:80]} failed (exit {rc})",
+                      file=sys.stderr, flush=True)
+                if not runner.keep_going:
+                    return rc
+                failed.append(op)
+        if failed:
+            print(f"app-hub-helper: {len(failed)} step(s) failed", file=sys.stderr, flush=True)
+            return 1
+        return 0
+    finally:
+        runner.cleanup()
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

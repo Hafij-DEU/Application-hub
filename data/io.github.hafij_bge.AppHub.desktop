@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=App Hub
+GenericName=App Manager
+Comment=Install, update and uninstall apps from any channel, find apps with AI, clean leftovers
+Exec=app-hub %f
+Icon=io.github.hafij_bge.AppHub
+Terminal=false
+Categories=System;PackageManager;
+Keywords=install;update;uninstall;software;apps;deb;snap;flatpak;appimage;cleaner;
+MimeType=application/vnd.debian.binary-package;
+StartupNotify=true

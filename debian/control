@@ -1,0 +1,20 @@
+Package: app-hub
+Version: @VERSION@
+Architecture: all
+Maintainer: Hafij-BGE <mdhafijur.rahman@ogr.deu.edu.tr>
+Installed-Size: @SIZE@
+Depends: python3 (>= 3.10), python3-gi, python3-apt, gir1.2-gtk-4.0 (>= 4.14), gir1.2-adw-1 (>= 1.5), pkexec | policykit-1, apt, dpkg
+Recommends: polkitd
+Suggests: snapd, flatpak
+Section: admin
+Priority: optional
+Homepage: https://github.com/Hafij-DEU/Application-hub
+Description: install, update and uninstall apps from any channel
+ App Hub installs and updates Craft Suite, Markd, Draco Download Manager,
+ DocScan, Extendo and Astra Player from their GitHub releases, with SHA-256 checks.
+ .
+ It also lists every installed desktop app (deb, snap, Flatpak, AppImage)
+ with its channel, updates and uninstalls them, shows recently uninstalled
+ apps with a reinstall button, installs local .deb files, keeps a list of
+ favorite apps, asks Gemini where to get an app (answers are verified
+ before install) and cleans leftovers of removed apps.

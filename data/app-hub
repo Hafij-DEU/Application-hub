@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/python3 -Is -c 'import sys; sys.path.insert(0, "/usr/lib/app-hub"); from app_hub.cli import main; sys.exit(main())' "$@"

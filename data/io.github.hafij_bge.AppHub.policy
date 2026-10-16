@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+  <vendor>App Hub</vendor>
+  <vendor_url>https://github.com/Hafij-DEU/Application-hub</vendor_url>
+  <icon_name>io.github.hafij_bge.AppHub</icon_name>
+  <action id="io.github.hafij_bge.AppHub.manage">
+    <description>Install, update or uninstall apps</description>
+    <message>Authentication is required to install, update or uninstall apps</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/lib/app-hub/app-hub-helper</annotate>
+  </action>
+</policyconfig>

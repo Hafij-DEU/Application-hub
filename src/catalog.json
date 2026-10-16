@@ -1,0 +1,63 @@
+{
+  "apps": [
+    {
+      "id": "app-hub",
+      "name": "App Hub",
+      "summary": "This app: install, update and uninstall apps",
+      "repo": "Hafij-DEU/Application-hub",
+      "package": "app-hub",
+      "desktop": "io.github.hafij_bge.AppHub.desktop"
+    },
+    {
+      "id": "craft-suite",
+      "name": "Craft Suite",
+      "summary": "Word, Slide, Spreadsheet and Markd in one window",
+      "repo": "Hafij-BGE/software",
+      "package": "craft-suite",
+      "desktop": "craft-suite.desktop"
+    },
+    {
+      "id": "markd",
+      "name": "Markd",
+      "summary": "Markdown reader and editor",
+      "repo": "Hafij-BGE/markd",
+      "package": "markd",
+      "desktop": "markd.desktop"
+    },
+    {
+      "id": "draco",
+      "name": "Draco Download Manager",
+      "summary": "Fast multi-connection download manager",
+      "repo": "Hafij-BGE/draco-dm",
+      "package": "draco-dm",
+      "desktop": "io.github.draco.DracoDM.desktop"
+    },
+    {
+      "id": "docscan",
+      "name": "DocScan",
+      "summary": "Scan documents with your camera and export PDF",
+      "repo": "Hafij-DEU/Scan",
+      "package": "docscan",
+      "desktop": "docscan.desktop"
+    },
+    {
+      "id": "extendo",
+      "name": "Extendo",
+      "summary": "Use an Android tablet as a second monitor",
+      "repo": "Hafij-BGE/Second-monitor",
+      "package": "extendo",
+      "desktop": "extendo.desktop"
+    },
+    {
+      "id": "astra-player",
+      "name": "Astra Player",
+      "summary": "Video and music player with every codec built in",
+      "repo": "Hafij-DEU/video-player",
+      "package": "astra-player",
+      "desktop": "io.github.hafij.AstraPlayer.desktop",
+      "replaces": [
+        "kiln-player"
+      ]
+    }
+  ]
+}
