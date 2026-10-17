@@ -1,10 +1,15 @@
 """Command-line front end. With no subcommand it opens the GUI."""
 
 import argparse
+import json
 import os
 import sys
+import time
 
 from . import __version__, core
+
+# Pages of the window for --page (gui.PAGES maps them; kept here so the CLI needs no GTK).
+PAGES = ["updates", "my-apps", "library", "all-apps", "ai", "cleaner"]
 
 
 def _bar(done, total, label):
@@ -28,22 +33,56 @@ def _load(check=True):
     return apps
 
 
+def _status(a):
+    if a.error:
+        return a.error
+    if a.update_available:
+        return "update available"
+    if a.installed:
+        return "up to date"
+    if a.installable:
+        return "not installed"
+    return "no .deb for this system"
+
+
+def _icon(a):
+    """Icon file for an app (Library icon, else bundled icon), "" if none."""
+    if a.icon and os.path.exists(a.icon):
+        return a.icon
+    bundled = os.path.join(core.LIB_DIR, "icons", f"{a.id}.png")
+    return bundled if os.path.exists(bundled) else ""
+
+
+def _print_json(data):
+    json.dump(data, sys.stdout, indent=1, ensure_ascii=False)
+    sys.stdout.write("\n")
+
+
 def cmd_list(args):
     apps = _load()
+    if args.json:
+        _print_json({
+            "version": __version__,
+            "checked_at": int(time.time()),
+            "apps": [{
+                "id": a.id,
+                "name": a.name,
+                "summary": a.summary,
+                "desktop": a.desktop,
+                "icon": _icon(a),
+                "installed": core.clean_version(a.installed) if a.installed else None,
+                "latest": a.release.version if a.release else None,
+                "status": _status(a),
+                "update_available": a.update_available,
+                "error": a.error or None,
+                "stale": bool(a.release and a.release.stale),
+            } for a in apps],
+        })
+        return 0
     rows = [("APP", "INSTALLED", "LATEST", "STATUS")]
     for a in apps:
         latest = a.release.version if a.release else "-"
-        if a.error:
-            status = a.error
-        elif a.update_available:
-            status = "update available"
-        elif a.installed:
-            status = "up to date"
-        elif a.installable:
-            status = "not installed"
-        else:
-            status = "no .deb for this system"
-        rows.append((a.id, core.clean_version(a.installed) if a.installed else "-", latest, status))
+        rows.append((a.id, core.clean_version(a.installed) if a.installed else "-", latest, _status(a)))
     widths = [max(len(r[i]) for r in rows) for i in range(3)]
     for r in rows:
         print("  ".join(c.ljust(w) for c, w in zip(r, widths)) + "  " + r[3])
@@ -188,6 +227,21 @@ def cmd_update_all(args):
     if include_system:
         skip = {a.id for a in system if a.channel == "apt"} | {a.package for a in hub}
         sysup = inventory.system_upgrades(inventory.open_apt_cache(), skip)
+    if args.json:
+        items = [{"kind": p.kind, "id": p.obj.id, "name": p.label, "old": p.old, "new": p.new,
+                  "phased": False} for p in pending]
+        items += [{"kind": "system", "id": name, "name": name, "old": old, "new": new,
+                   "phased": phased} for name, old, new, phased in sysup]
+        _print_json({"version": __version__, "checked_at": int(time.time()), "updates": items})
+        return 0
+    if args.dry_run:
+        for p in pending:
+            print(f"  {p.label}: {p.old} -> {p.new} ({p.kind})")
+        for name, old, new, phased in sysup:
+            print(f"  {name}: {old} -> {new} ({'system, staged rollout' if phased else 'system'})")
+        if not pending and not sysup:
+            print("Everything is up to date.")
+        return 0
     if not pending and not sysup:
         print("Everything is up to date." if args.apps_only else
               "No updates known; refreshing the package lists to check again.")
@@ -234,8 +288,11 @@ def main(argv=None):
         description="Install, update and remove apps (your GitHub apps, deb, snap, flatpak, AppImage). "
                     "Run without a command to open the window.")
     parser.add_argument("--version", action="version", version=f"app-hub {__version__}")
+    parser.add_argument("--page", choices=PAGES,
+                        help="open the window on this page (or switch the open window to it)")
     sub = parser.add_subparsers(dest="command")
     p = sub.add_parser("list", aliases=["check"], help="show installed and latest versions")
+    p.add_argument("--json", action="store_true", help="machine-readable output")
     p.set_defaults(func=cmd_list)
     p = sub.add_parser("install", help="install apps")
     p.add_argument("apps", nargs="+")
@@ -270,6 +327,8 @@ def main(argv=None):
     p.add_argument("--include-phased", action="store_true",
                    help="also install Ubuntu's staged-rollout (phased) updates early")
     p.add_argument("-y", "--yes", action="store_true", help="do not ask for confirmation")
+    p.add_argument("--dry-run", action="store_true", help="only list pending updates, install nothing")
+    p.add_argument("--json", action="store_true", help="list pending updates as JSON (implies --dry-run)")
     p.set_defaults(func=cmd_update_all)
     p = sub.add_parser("add", help="add a GitHub project with .deb releases to the Library")
     p.add_argument("repo", help="owner/repo or https://github.com/owner/repo")
@@ -283,9 +342,11 @@ def main(argv=None):
         from .gui import run
         return run([os.path.abspath(argv[0])])
     args = parser.parse_args(argv)
+    if args.page and args.command:
+        parser.error("--page is for the window; use it without a command")
     if not args.command:
         from .gui import run
-        return run()
+        return run(page=args.page)
     try:
         return args.func(args)
     except core.HubError as e:

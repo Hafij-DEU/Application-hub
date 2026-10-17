@@ -10,3 +10,8 @@ Categories=System;PackageManager;
 Keywords=install;update;uninstall;software;apps;deb;snap;flatpak;appimage;cleaner;
 MimeType=application/vnd.debian.binary-package;
 StartupNotify=true
+Actions=updates;
+
+[Desktop Action updates]
+Name=Updates
+Exec=app-hub --page updates

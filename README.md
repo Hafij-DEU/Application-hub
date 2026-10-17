@@ -78,13 +78,16 @@ sudo apt install ./app-hub_1.5.1_all.deb
 ## Terminal
 
 ```
-app-hub list                # your GitHub apps: installed vs latest
+app-hub list [--json]       # your GitHub apps: installed vs latest
+app-hub update-all --dry-run [--json]   # pending app + system updates, installs nothing
 app-hub install markd       app-hub update       app-hub remove extendo
 app-hub apps [--channel snap]   # every installed app with channel and updates
 app-hub recent              # recently uninstalled
 app-hub install-deb FILE.deb
 app-hub ai "pdf editor"     # Gemini suggestions, verified
 app-hub favorites
+app-hub --page updates      # open the window on a page (updates, my-apps, library,
+                            # all-apps, ai, cleaner); switches the open window if running
 ```
 
 ## How root access works

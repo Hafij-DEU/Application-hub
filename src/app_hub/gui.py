@@ -1,6 +1,7 @@
 """GTK 4 / libadwaita window: My Apps, Updates, Library, All Apps, AI Install and Cleaner tabs."""
 
 import os
+import sys
 import threading
 
 import gi
@@ -1569,6 +1570,12 @@ class Window(Adw.ApplicationWindow):
         for page in (self.home, self.library_page, self.apps_page, self.ai_page, self.cleaner_page):
             page.sync()
 
+    def show_page(self, name):
+        """Switch to a page by its --page name (updates, my-apps, …) or stack name."""
+        name = PAGES.get(name, name)
+        if self.stack.get_child_by_name(name):
+            self.stack.set_visible_child_name(name)
+
     def on_page(self, *_):
         self.sync_update_everything()
         if self.stack.get_visible_child_name() == "cleaner" and not self.cleaner_page.scanned:
@@ -1826,6 +1833,11 @@ class Window(Adw.ApplicationWindow):
         dialog.present(self)
 
 
+# `app-hub --page NAME` and the app.show-page action: page name -> stack page.
+PAGES = {"updates": "updates", "my-apps": "home", "library": "library",
+         "all-apps": "apps", "ai": "ai", "cleaner": "cleaner"}
+
+
 class Application(Adw.Application):
     def __init__(self):
         super().__init__(application_id=APP_ID, flags=Gio.ApplicationFlags.HANDLES_OPEN)
@@ -1834,12 +1846,27 @@ class Application(Adw.Application):
         about = Gio.SimpleAction.new("about", None)
         about.connect("activate", self.on_about)
         self.add_action(about)
-
+        # Exported on D-Bus, so a second `app-hub --page X` (or
+        # `gapplication action io.github.hafij_bge.AppHub show-page "'updates'"`)
+        # switches the running window.
+        show = Gio.SimpleAction.new("show-page", GLib.VariantType.new("s"))
+        show.connect("activate", lambda _a, param: self.show_page(param.get_string()))
+        self.add_action(show)
+        self.start_page = None   # --page for the first window
     def window(self):
         return self.get_active_window() or Window(self)
 
+    def show_page(self, name):
+        win = self.window()
+        win.show_page(name)
+        win.present()
+
     def do_activate(self):
-        self.window().present()
+        win = self.window()
+        if self.start_page:
+            win.show_page(self.start_page)
+            self.start_page = None
+        win.present()
 
     def do_open(self, files, _n, _hint):
         win = self.window()
@@ -1858,5 +1885,18 @@ class Application(Adw.Application):
         ).present(self.get_active_window())
 
 
-def run(argv=None):
-    return Application().run(["app-hub", *(argv or [])])
+def run(argv=None, page=None):
+    app = Application()
+    if page:
+        # If App Hub is already running, ask it to show the page (run() then
+        # raises its window); otherwise this process opens on that page.
+        try:
+            app.register(None)
+        except GLib.Error as e:
+            print(f"app-hub: {e.message}", file=sys.stderr)
+            return 1
+        if app.get_is_remote():
+            app.activate_action("show-page", GLib.Variant("s", page))
+        else:
+            app.start_page = page
+    return app.run(["app-hub", *(argv or [])])
