@@ -1,104 +1,153 @@
+<div align="center">
+
+<img src="data/io.github.hafij_bge.AppHub.svg" width="112" alt="App Hub icon">
+
 # App Hub
 
-App manager for Ubuntu and Debian: install, update and uninstall apps from GitHub releases,
-apt, Snap, Flatpak and AppImage, from one window. Download the `.deb` from
-[Releases](https://github.com/Hafij-DEU/Application-hub/releases). App Hub shows itself in its own section
-above My Apps and updates itself from the same page.
+**One window to install, update and remove every app on Ubuntu:** GitHub releases, apt, Snap,
+Flatpak and AppImage, with a single password prompt for everything.
 
-App manager for Ubuntu/Debian. Tabs:
+[![Latest release](https://img.shields.io/github/v/release/Hafij-DEU/Application-hub?label=release&color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/Hafij-DEU/Application-hub/total?color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases)
+![Ubuntu 24.04+ · Debian 13](https://img.shields.io/badge/Ubuntu_24.04+_·_Debian_13-E95420?logo=ubuntu&logoColor=white)
+![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
+![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)
 
-* **My Apps**: installs and updates these apps from their latest GitHub release, plus your **Favorites**.
-  **Add App** (in the My Apps header) adds your own app: paste its GitHub link, or your account
-  link (`github.com/your-name`) to list all your projects that publish a `.deb`. Added apps are
-  kept in `~/.config/app-hub/library.json`; `app-hub add --mine owner/repo` does the same.
+[**Download**](https://github.com/Hafij-DEU/Application-hub/releases/latest) ·
+[Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
 
-  | App | Repo | Package |
-  |---|---|---|
-  | Craft Suite | Hafij-BGE/software | `craft-suite` |
-  | Markd | Hafij-BGE/markd | `markd` |
-  | Draco Download Manager | Hafij-BGE/draco-dm | `draco-dm` |
-  | DocScan (scanner) | Hafij-DEU/Scan | `docscan` |
-  | Extendo (second monitor) | Hafij-BGE/Second-monitor | `extendo` |
-  | Astra Player (video player, was Kiln Player) | Hafij-DEU/video-player | `astra-player` |
+<img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
 
-* **Updates**: checks every app (GitHub releases of My Apps and Library, Deb, Snap, Flatpak and
-  system packages) and lists each pending update with old → new version, its channel and, for
-  GitHub apps, the release notes. Update one at a time with its own button, or all at once.
-  The tab shows how many updates are waiting.
-* **Library**: apps from any GitHub project that publishes `.deb` releases, grouped by GitHub
-  owner, with the same Install / Update / Open / Uninstall as My Apps. It starts with 13 apps
-  (PhotoCraft, VectorCraft, FilmCraft, LightCraft, PdfCraft, EffectCraft, DesignCraft, WordCraft,
-  DeckCraft, GridCraft, CADCraft, SoundCraft, FigCraft from github.com/storytold).
-  **Add App** takes a repository link, a whole account or organization (lists every project with a
-  `.deb` release), or an app name (Gemini suggests repositories; each one is checked on GitHub).
-  App Hub reads the package name from the release `.deb` header (an HTTP range request, no full
-  download) and the icon from the repository. Your additions are kept in
-  `~/.config/app-hub/library.json`. `app-hub add owner/repo` does the same from a terminal.
-* **Update Everything**: when any update is pending, a banner under the title bar (and Update All
-  in All Apps, and Menu ▸ Update Everything…) updates everything at once: My Apps, Library, Deb,
-  Snap, Flatpak and other system packages (`apt update` + `apt upgrade`, on by default). Downloads
-  run first, then all root work goes to the helper in one plan, so you type the password once. One
-  failing app does not stop the others. All Apps lists the pending system packages.
-  Terminal: `app-hub update-all [--apps-only] [--yes]`.
-* **All Apps**: every installed desktop app with its channel (Deb + its repository, Snap + channel,
-  Flatpak + remote, AppImage + folder). You can update, open, star or uninstall each one.
-  **Recently Uninstalled** lists apps removed in the last 60 days by any tool (read from apt's
-  history, `flatpak history`, snapd and App Hub's own record) and has an Install button.
-* **AI Install**: ask Gemini (with Google Search) how to install an app. Gemini may only answer
-  with an apt package, snap, Flatpak, GitHub repo, or https `.deb`/AppImage link. App Hub checks
-  each one (apt cache, Snap Store, `flatpak remote-info`, GitHub API, HTTPS HEAD) and you confirm
-  before anything installs. Commands written by the AI are shown as notes and never run.
-  Add the key under Menu ▸ Preferences (saved to `~/.config/app-hub/settings.json`, mode 600)
-  or set `GEMINI_API_KEY`.
-* **Cleaner**: leftovers of removed apps: their folders in `~/.config`, `~/.local/share`,
-  `~/.cache`, `~/.var/app` and `~/snap` (moved to the Trash), plus removed packages' config files
-  (`purge`), unused dependencies (`autoremove`), old snap revisions, unused Flatpak runtimes,
-  downloaded `.deb` files (`apt clean`) and App Hub's own storage. A folder is offered only when
-  its name matches a removed app, no installed app uses that name, and nothing wrote to it after
-  the app was removed.
+</div>
 
-**GitHub sign-in**: without it GitHub answers only 60 update checks per hour per network. App Hub
-uses your GitHub CLI login (`gh auth login`) when `gh` is installed, or a token saved under
-Menu ▸ Preferences (it needs no permissions), and then gets 5000. When GitHub cannot be asked,
-App Hub shows the last answer and says so. If an app's newest release has no `.deb` for this
-system, App Hub offers the newest release that has one.
+## Features
 
-The bar at the bottom shows the free space on the Ubuntu disk (and on `/home` when it is a
-separate partition), with **Free Up Space** to open the Cleaner.
+| | |
+|---|---|
+| **My Apps** | Installs and updates apps straight from their latest GitHub release. **Add App** adds your own: paste a repo link, or your account link to list every project that publishes a `.deb`. |
+| **Updates** | Checks GitHub, Deb, Snap, Flatpak and system packages, and lists every pending update with old → new version and release notes. Update one app, or everything at once. The tab shows how many updates are waiting. |
+| **Library** | Any GitHub project with `.deb` releases, grouped by owner. Starts with 13 creative apps from [storytold](https://github.com/storytold) (PhotoCraft, VectorCraft, FilmCraft, …). Add more by link, by account, or by name with AI. |
+| **All Apps** | Every installed desktop app with its channel (Deb, Snap, Flatpak, AppImage). Update, open, star or uninstall each one. **Recently Uninstalled** brings back anything removed in the last 60 days, by any tool. |
+| **AI Install** | Ask Gemini how to install an app. Every answer is checked locally (apt cache, Snap Store, Flatpak remote, GitHub) before you confirm. Commands written by the AI are never run. |
+| **Cleaner** | Finds what removed apps left behind: folders in your home (moved to the Trash, not deleted), config files, unused dependencies, old snap revisions, unused Flatpak runtimes and cached `.deb` files. |
 
-**Install .deb** (header button or menu, or double-click a `.deb` and choose App Hub) shows the package,
-version change and size, then installs it with `apt`, so dependencies come along.
+And more:
+
+- 🔐 **One password for everything.** All root work goes into one plan, so Update Everything asks
+  once. One failing app does not stop the others.
+- 💽 **Free space at a glance.** The bottom bar shows free space on the Ubuntu disk (and `/home` if
+  it is separate), with **Free Up Space** to open the Cleaner.
+- 📦 **Install any `.deb`.** Double-click a `.deb` file or use the open button. App Hub shows the
+  version change and size, then installs it with `apt`, so dependencies come along.
+- ⭐ **Favorites.** Star apps, then install them all on a new machine with one click.
+- 🧭 **Ubuntu staged updates.** Phased (staged-rollout) updates are listed separately and can be
+  installed early if you choose.
+- 🎨 **Native look.** GTK 4 and libadwaita, following your system's light/dark style and accent color.
+
+<table>
+  <tr>
+    <td><img src="docs/screenshots/updates.png" alt="Updates page"></td>
+    <td><img src="docs/screenshots/library.png" alt="Library page"></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Updates</b>: every pending update, one by one or all at once</td>
+    <td align="center"><b>Library</b>: GitHub projects with <code>.deb</code> releases</td>
+  </tr>
+</table>
 
 ## Install
 
-```
-sudo apt install ./app-hub_1.5.1_all.deb
-```
+Download `app-hub_<version>_all.deb` from the
+[latest release](https://github.com/Hafij-DEU/Application-hub/releases/latest), then:
 
-## Terminal
-
-```
-app-hub list [--json]       # your GitHub apps: installed vs latest
-app-hub update-all --dry-run [--json]   # pending app + system updates, installs nothing
-app-hub install markd       app-hub update       app-hub remove extendo
-app-hub apps [--channel snap]   # every installed app with channel and updates
-app-hub recent              # recently uninstalled
-app-hub install-deb FILE.deb
-app-hub ai "pdf editor"     # Gemini suggestions, verified
-app-hub favorites
-app-hub --page updates      # open the window on a page (updates, my-apps, library,
-                            # all-apps, ai, cleaner); switches the open window if running
+```bash
+sudo apt install ./app-hub_*_all.deb
 ```
 
-## How root access works
+Requires Ubuntu 24.04 or newer, or Debian 13 (Python 3.10+, GTK 4.14+, libadwaita 1.5+).
+Snap and Flatpak support turns on when `snapd` or `flatpak` is installed.
+From then on, App Hub updates itself from its own row at the top of My Apps.
 
-Everything that needs root goes through `/usr/lib/app-hub/app-hub-helper`, started with
-`pkexec` (one password prompt per task). It takes a JSON list of steps (`apt-install`,
-`apt-remove`, `apt-purge`, `install-deb`, `snap-remove`, `flatpak-uninstall`, …) and checks every
-package, snap, ref and channel name against a strict pattern, so nothing can be passed as an
-option. `app-hub-helper --simulate PLAN` prints the commands and runs apt in simulate mode.
+### Apps in My Apps
 
-Build the package with `./build-deb.sh`.
+| App | What it is | Repository |
+|---|---|---|
+| Craft Suite | Word, Slide, Spreadsheet and Markd in one window | [Hafij-BGE/software](https://github.com/Hafij-BGE/software) |
+| Markd | Markdown reader and editor | [Hafij-BGE/markd](https://github.com/Hafij-BGE/markd) |
+| Draco Download Manager | Fast multi-connection download manager | [Hafij-BGE/draco-dm](https://github.com/Hafij-BGE/draco-dm) |
+| DocScan | Scan documents with your camera and export PDF | [Hafij-DEU/Scan](https://github.com/Hafij-DEU/Scan) |
+| Extendo | Use an Android tablet as a second monitor | [Hafij-BGE/Second-monitor](https://github.com/Hafij-BGE/Second-monitor) |
+| Astra Player | Video and music player with every codec built in | [Hafij-DEU/video-player](https://github.com/Hafij-DEU/video-player) |
+
+## Setup tips
+
+**GitHub sign-in (recommended).** Without it, GitHub allows only 60 update checks per hour per
+network. App Hub uses your GitHub CLI login (`gh auth login`) automatically, or a token saved in
+**Menu ▸ Preferences** (it needs no permissions); either raises the limit to 5000. When GitHub
+can't be reached, App Hub shows its last answer and says so.
+
+**AI Install.** Add a free Gemini API key in **Menu ▸ Preferences**
+([get one here](https://aistudio.google.com/apikey)), or set `GEMINI_API_KEY`.
+
+**Open a page directly.** `app-hub --page updates` opens the Updates page, or switches the open
+window to it. The launcher's right-click menu has the same **Updates** shortcut, which the
+Fusion Desk panel uses for its "App Update" item.
+
+## Command line
+
+Everything in the window also works from a terminal:
+
+| Command | What it does |
+|---|---|
+| `app-hub` | Open the window (`--page updates\|my-apps\|library\|all-apps\|ai\|cleaner`) |
+| `app-hub list [--json]` | Your GitHub apps: installed vs latest |
+| `app-hub install markd` · `update [APP…]` · `remove extendo` | Manage GitHub apps |
+| `app-hub update-all [--apps-only] [--include-phased] [-y]` | Update everything with one password |
+| `app-hub update-all --dry-run [--json]` | List pending app and system updates; install nothing |
+| `app-hub apps [--channel snap] [--no-updates]` | Every installed app with channel and updates |
+| `app-hub recent` | Recently uninstalled apps |
+| `app-hub add [--mine] owner/repo` | Add a GitHub project to the Library (or to My Apps) |
+| `app-hub install-deb FILE.deb` | Install a local `.deb` with its dependencies |
+| `app-hub ai "pdf editor"` | Ask Gemini; every suggestion is verified |
+| `app-hub favorites` | List favorite apps |
+
+## How it works
+
+**Root access.** Everything that needs root goes through `/usr/lib/app-hub/app-hub-helper`,
+started with `pkexec` under the polkit action `io.github.hafij_bge.AppHub.manage`. The helper
+takes a JSON list of steps (`install-deb`, `apt-upgrade`, `snap-refresh`, `flatpak-update`, …) and
+checks every package, snap, ref and channel name against a strict pattern, so nothing can be
+passed in as an option. `app-hub-helper --simulate PLAN` prints the commands and runs apt in
+simulate mode.
+
+**GitHub releases.** App Hub picks the `.deb` asset that fits this machine (architecture first,
+then a build for this exact distro version, then a generic one) and verifies its SHA-256 against
+GitHub's digest or a `SHA256SUMS` file. To add a project, it reads the package name from the
+`.deb` header with an HTTP range request, so nothing big is downloaded. If the newest release has
+no `.deb` for this system, it offers the newest one that does. Answers are cached with ETags, so
+unchanged checks don't count against the rate limit.
+
+**Your files.**
+
+| Path | Contents |
+|---|---|
+| `~/.config/app-hub/settings.json` | Gemini key and model, GitHub token (readable only by you) |
+| `~/.config/app-hub/library.json` | Apps you added, and default Library apps you removed |
+| `~/.local/share/app-hub/` | Favorites, uninstall history, Library icons |
+| `~/.cache/app-hub/` | GitHub answers and downloaded releases |
+
+## Build from source
+
+```bash
+git clone https://github.com/Hafij-DEU/Application-hub.git
+cd Application-hub
+./build-deb.sh          # creates dist/app-hub_<version>_all.deb
+```
+
+The app is plain Python in `src/app_hub/`: `gui.py` is the window, `cli.py` the terminal front
+end, `core.py` the GitHub and dpkg logic, and `inventory.py` lists apps across channels.
+`src/app-hub-helper` is the root helper, `src/catalog.json` lists the My Apps entries and
+`src/library-default.json` the default Library.
 
 ## Credits
 
