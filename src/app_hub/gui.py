@@ -23,6 +23,19 @@ CSS = """
 .disk-level.warning progress { background-color: @warning_color; }
 .disk-level.error progress { background-color: @error_color; }
 .release-notes { font-size: 0.92em; }
+
+/* Cards and chips */
+.section-title { font-weight: 800; font-size: 1.3em; }
+.app-card { padding: 14px; border-radius: 16px; }
+.app-card-wide { padding: 12px 14px; }
+.app-card .app-name { font-weight: 700; font-size: 1.08em; margin-top: 4px; }
+.app-card .app-summary { font-size: 0.9em; min-height: 2.6em; }
+.app-card-icon { -gtk-icon-shadow: 0 2px 6px alpha(black, 0.18); }
+.chip { font-size: 0.8em; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+        background: alpha(currentColor, 0.08); }
+.chip.ok { background: alpha(@success_color, 0.15); color: @success_color; }
+.chip.update { background: alpha(@accent_color, 0.18); color: @accent_color; }
+.chip.error { background: alpha(@error_color, 0.15); color: @error_color; }
 """
 
 
@@ -151,39 +164,129 @@ def disk_usage(path):
 # My Apps: App Hub catalog + Favorites
 # --------------------------------------------------------------------------
 
-class HubRow(Adw.ActionRow):
-    def __init__(self, section, app):
-        super().__init__(title=GLib.markup_escape_text(app.name))
+def section_header(title, description, suffix=None):
+    """Bold section title with a dim description and optional widgets on the right."""
+    box = Gtk.Box(spacing=12, margin_bottom=4)
+    text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True, valign=Gtk.Align.END)
+    title_lbl = Gtk.Label(label=title, xalign=0, css_classes=["section-title"])
+    text.append(title_lbl)
+    if description:
+        text.append(Gtk.Label(label=description, xalign=0, wrap=True, css_classes=["dim-label", "caption"]))
+    box.append(text)
+    if suffix:
+        suffix.set_valign(Gtk.Align.END)
+        box.append(suffix)
+    return box
+
+
+def chip(text, kind=""):
+    lbl = Gtk.Label(label=text, ellipsize=Pango.EllipsizeMode.END, max_width_chars=22,
+                    css_classes=["chip"] + ([kind] if kind else []))
+    return lbl
+
+
+class HubCard(Gtk.FlowBoxChild):
+    """One GitHub-release app as a card: icon, name, summary, status chip, main button and a ⋮ menu."""
+
+    def __init__(self, section, app, wide=False):
+        super().__init__(focusable=False)
         self.section, self.app, self.cancel = section, app, None
         win = section.win
-        self.icon = Gtk.Image(pixel_size=40)
-        self.add_prefix(self.icon)
-        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
-        self.progress = Gtk.ProgressBar(visible=False, valign=Gtk.Align.CENTER, width_request=120,
-                                        show_text=True)
-        self.open_btn = text_button("Open", lambda: win.open_hub(self.app))
-        self.main_btn = text_button("", self.on_main)
-        self.remove_btn = flat_button("user-trash-symbolic", "Uninstall", lambda: section.uninstall(self.app))
-        self.web_btn = flat_button("web-browser-symbolic", "Release page", self.on_web)
-        for w in (self.progress, self.open_btn, self.main_btn, self.remove_btn, self.web_btn):
-            box.append(w)
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6, css_classes=["card", "app-card"])
+        self.set_child(card)
+
+        top = Gtk.Box(spacing=12)
+        self.icon = Gtk.Image(pixel_size=48 if wide else 52, halign=Gtk.Align.START,
+                              hexpand=not wide, css_classes=["app-card-icon"])
+        top.append(self.icon)
+        self.menu_btn = Gtk.MenuButton(icon_name="view-more-symbolic", valign=Gtk.Align.START,
+                                       tooltip_text="More", css_classes=["flat", "circular"])
+        menu = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, margin_top=4, margin_bottom=4)
+        self.popover = Gtk.Popover(child=menu)
+        self.menu_btn.set_popover(self.popover)
+
+        def item(label, icon, cb, destructive=False):
+            btn = Gtk.Button(css_classes=["flat"] + (["destructive-action"] if destructive else []))
+            btn.set_child(Adw.ButtonContent(icon_name=icon, label=label, halign=Gtk.Align.START))
+            btn.connect("clicked", lambda *_: (self.popover.popdown(), cb()))
+            menu.append(btn)
+            return btn
+        item("Release page", "web-browser-symbolic", self.on_web)
+        self.remove_item = item("Uninstall", "user-trash-symbolic", lambda: section.uninstall(self.app), True)
         if section.removable or app.section == "mine":
             where = "My Apps" if app.section == "mine" else "Library"
-            box.append(flat_button("list-remove-symbolic", f"Remove from {where} (does not uninstall)",
-                                   lambda: section.remove_from_library(self.app)))
-        self.add_suffix(box)
+            item(f"Remove from {where}", "list-remove-symbolic", lambda: section.remove_from_library(self.app))
+        name = Gtk.Label(label=app.name, xalign=0, ellipsize=Pango.EllipsizeMode.END,
+                         max_width_chars=20, css_classes=["app-name"])
+        self.summary = Gtk.Label(label=app.summary or "", xalign=0, yalign=0, wrap=True, lines=2,
+                                 width_chars=18, max_width_chars=26, ellipsize=Pango.EllipsizeMode.END,
+                                 css_classes=["dim-label", "app-summary"])
+        self.chip = chip("")
+        self.chip.set_halign(Gtk.Align.START)
+        self.chip.set_valign(Gtk.Align.CENTER)
+        self.progress = Gtk.ProgressBar(visible=False, show_text=True, valign=Gtk.Align.CENTER)
+        buttons = Gtk.Box(spacing=6, homogeneous=not wide, valign=Gtk.Align.CENTER)
+        self.open_btn = text_button("Open", lambda: win.open_hub(self.app))
+        self.main_btn = text_button("", self.on_main)
+        for b in (self.open_btn, self.main_btn):
+            buttons.append(b)
+
+        if wide:   # banner: icon · name/summary · chip · buttons · menu, in one line
+            card.add_css_class("app-card-wide")
+            text = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2, hexpand=True,
+                           valign=Gtk.Align.CENTER)
+            self.summary.set_lines(1)
+            text.append(name)
+            text.append(self.summary)
+            top.append(text)
+            top.append(self.chip)
+            top.append(self.progress)
+            top.append(buttons)
+            top.append(self.menu_btn)
+            card.append(top)
+        else:
+            top.append(self.menu_btn)
+            card.append(top)
+            card.append(name)
+            self.summary.set_vexpand(True)
+            card.append(self.summary)
+            card.append(self.chip)
+            card.append(self.progress)
+            card.append(buttons)
         self.sync()
+
+    def status(self):
+        """(short chip text, chip style) for the card; the full text goes into the tooltip."""
+        app = self.app
+        installed = core.clean_version(app.installed) if app.installed else ""
+        if app.error:
+            return ("Installed " + installed if installed else "Unavailable"), "error"
+        if app.release is None:
+            return (installed or "Checking…"), ""
+        if not app.release.asset_url:
+            return (installed or "No download"), ""
+        if app.update_available:
+            return f"{installed} → {app.release.version}", "update"
+        if installed:
+            return f"✓ {installed}", "ok"
+        return f"{app.release.version} · {core.human_size(app.release.size)}", ""
 
     def sync(self):
         app, busy = self.app, self.section.win.busy
         set_hub_icon(self.icon, app)
-        self.set_subtitle(GLib.markup_escape_text(f"{app.summary} · {app.status_text()}" if app.summary
-                                                  else app.status_text()))
+        text, kind = self.status()
+        self.chip.set_label(text)
+        for k in ("ok", "update", "error"):
+            self.chip.remove_css_class(k)
+        if kind:
+            self.chip.add_css_class(kind)
+        self.set_tooltip_text(app.status_text())
         downloading = self.cancel is not None
+        self.chip.set_visible(not downloading)
         self.open_btn.set_visible(bool(app.installed) and not downloading)
         # App Hub cannot uninstall itself while running (use apt remove app-hub).
-        self.remove_btn.set_visible(bool(app.installed) and not downloading and app.package != "app-hub")
-        self.remove_btn.set_sensitive(not busy)
+        self.remove_item.set_visible(bool(app.installed) and app.package != "app-hub")
+        self.remove_item.set_sensitive(not busy and not downloading)
         self.main_btn.remove_css_class("suggested-action")
         if downloading:
             self.main_btn.set_label("Cancel")
@@ -217,30 +320,37 @@ class HubRow(Adw.ActionRow):
 
 
 class HubSection:
-    """A group of GitHub-release apps with Install / Update / Open / Uninstall."""
+    """A grid of GitHub-release app cards with Install / Update / Open / Uninstall."""
 
-    def __init__(self, win, title, description, apps, removable=False, on_removed=None, extra=None):
+    def __init__(self, win, title, description, apps, removable=False, on_removed=None, extra=None,
+                 wide=False):
         self.win, self.apps, self.removable, self.on_removed = win, [], removable, on_removed
-        self.group = Adw.PreferencesGroup(title=GLib.markup_escape_text(title),
-                                          description=GLib.markup_escape_text(description))
+        self.wide = wide
         self.update_all_btn = text_button("Update All", lambda: self.install(
             [a for a in self.apps if a.update_available]), "suggested-action")
         self.update_all_btn.set_visible(False)
-        header = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.update_all_btn.add_css_class("pill")
+        header = Gtk.Box(spacing=6)
         header.append(self.update_all_btn)
         if extra:
+            extra.add_css_class("pill")
             header.append(extra)
-        self.group.set_header_suffix(header)
+        self.flow = Gtk.FlowBox(selection_mode=Gtk.SelectionMode.NONE, homogeneous=True,
+                                min_children_per_line=1, max_children_per_line=1 if wide else 4,
+                                column_spacing=12, row_spacing=12, valign=Gtk.Align.START)
+        self.group = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        self.group.append(section_header(title, description, header))
+        self.group.append(self.flow)
         self.rows = {}
         self.set_apps(apps)
 
     def set_apps(self, apps):
-        for row in self.rows.values():
-            self.group.remove(row)
+        self.flow.remove_all()
         self.apps, self.rows = apps, {}
         for app in self.apps:
-            self.rows[app.id] = HubRow(self, app)
-            self.group.add(self.rows[app.id])
+            self.rows[app.id] = HubCard(self, app, self.wide)
+            self.flow.append(self.rows[app.id])
+        self.flow.set_visible(bool(self.apps))
 
     def refresh(self):
         core.refresh_installed(self.apps)
@@ -352,7 +462,7 @@ class HomePage:
         self.win = win
         catalog = core.load_catalog(include_library=False)
         self.self_hub = HubSection(win, "App Hub", "This app · github.com/Hafij-DEU/Application-hub",
-                                   [a for a in catalog if a.section == "self"])
+                                   [a for a in catalog if a.section == "self"], wide=True)
         add_btn = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Add your own app from GitHub")
         add_btn.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add App"))
         add_btn.connect("clicked", lambda *_: AddAppDialog(win, self, "mine").present(win))
@@ -364,23 +474,30 @@ class HomePage:
                                   [a for a in catalog if a.section == "extension"])
         core.refresh_installed(self.apps)
 
-        self.fav_group = Adw.PreferencesGroup(
-            title="Favorites", description="Apps you starred. Install them on any machine with one click.")
+        self.fav_group = Adw.PreferencesGroup()
         self.fav_install_btn = text_button("Install All", self.install_all_favorites)
-        self.fav_group.set_header_suffix(self.fav_install_btn)
+        self.fav_install_btn.add_css_class("pill")
         self.fav_rows = []
         self.fav_empty = Adw.ActionRow(title="No favorites yet",
                                        subtitle="Star apps in All Apps or AI Install to keep them here")
         self.fav_empty.add_prefix(Gtk.Image(icon_name="non-starred-symbolic"))
         self.fav_group.add(self.fav_empty)
-        self.dl_group = Adw.PreferencesGroup(
-            title="Downloads",
-            description="Admin only · GitHub release downloads, including your own installs and updates")
-        self.dl_group.set_header_suffix(flat_button("view-refresh-symbolic", "Refresh counts",
-                                                    self.load_downloads))
+        self.dl_group = Adw.PreferencesGroup()
         self.dl_rows = []
+
+        def titled(title, description, group, suffix):
+            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+            box.append(section_header(title, description, suffix))
+            box.append(group)
+            return box
+        self.dl_box = titled("Downloads",
+                             "Admin only · GitHub release downloads, including your own installs and updates",
+                             self.dl_group, flat_button("view-refresh-symbolic", "Refresh counts",
+                                                        self.load_downloads))
+        fav_box = titled("Favorites", "Apps you starred. Install them on any machine with one click.",
+                         self.fav_group, self.fav_install_btn)
         self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.ext_hub.group,
-                                       self.dl_group, self.fav_group)
+                                       self.dl_box, fav_box)
         self.set_admin(core.is_admin())
         self.reload_favorites()
         self.refresh()
@@ -399,7 +516,7 @@ class HomePage:
     def set_admin(self, admin):
         """Admin mode shows Add App in My Apps and the Downloads section."""
         self.add_btn.set_visible(admin)
-        self.dl_group.set_visible(admin)
+        self.dl_box.set_visible(admin)
         if admin and not self.dl_rows:
             self.load_downloads()
 
