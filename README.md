@@ -101,8 +101,9 @@ network. App Hub uses your GitHub CLI login (`gh auth login`) automatically, or 
 can't be reached, App Hub shows its last answer and says so.
 
 **Add App in My Apps (admin).** The **Add App** button in My Apps appears only after the admin
-PIN is entered in **Menu ▸ Preferences ▸ Admin**; **Lock** hides it again. The Library's own
-Add App is open to everyone. The maintainer sets the PIN with `./set-admin-pin.py`; only a
+PIN is entered in **Menu ▸ Preferences ▸ Admin**; **Lock** hides it again. Admin mode also shows a **Downloads** section in My Apps: how often
+each release of every app and extension was downloaded from GitHub (your own installs
+included), also as `app-hub downloads`. The Library's own Add App is open to everyone. The maintainer sets the PIN with `./set-admin-pin.py`; only a
 salted hash is stored.
 
 **AI Install.** Add a free Gemini API key in **Menu ▸ Preferences**
@@ -125,6 +126,7 @@ Everything in the window also works from a terminal:
 | `app-hub update-all --dry-run [--json]` | List pending app and system updates; install nothing |
 | `app-hub apps [--channel snap] [--no-updates]` | Every installed app with channel and updates |
 | `app-hub recent` | Recently uninstalled apps |
+| `app-hub downloads [--releases N] [--json]` | Download counts of your apps' releases (admin) |
 | `app-hub add [--mine] owner/repo` | Add a GitHub project to the Library (or to My Apps; asks for the admin PIN) |
 | `app-hub install-deb FILE.deb` | Install a local `.deb` with its dependencies |
 | `app-hub ai "pdf editor"` | Ask Gemini; every suggestion is verified |

@@ -208,6 +208,38 @@ def cmd_ai(args):
     return 0
 
 
+def cmd_downloads(args):
+    if not core.is_admin():
+        import getpass
+        if not sys.stdin.isatty() or not core.check_admin_pin(getpass.getpass("Admin PIN: ")):
+            raise core.HubError("download counts are for the admin")
+    apps = [a for a in core.load_catalog(include_library=False)]
+    from . import library
+    ids = {a.id for a in apps}
+    apps += [a for a in library.load_apps() if a.section == "mine" and a.id not in ids]
+    if args.json:
+        out = {}
+        for app in apps:
+            try:
+                out[app.id] = [{"tag": t, "date": d, "downloads": n} for t, d, n in core.download_stats(app)]
+            except core.HubError as e:
+                out[app.id] = {"error": str(e)}
+        print(json.dumps(out, indent=1))
+        return 0
+    for app in apps:
+        try:
+            stats = core.download_stats(app)
+        except core.HubError as e:
+            print(f"{app.name}: {e}")
+            continue
+        total = sum(n for _, _, n in stats)
+        print(f"{app.name}: {total} download{'' if total == 1 else 's'}")
+        for tag, date, n in stats[:args.releases]:
+            print(f"    {tag:<14} {date}  {n}")
+    print("Counts are GitHub release downloads, including your own installs and updates.")
+    return 0
+
+
 def cmd_favorites(args):
     from . import favorites
     rows = [("CHANNEL", "NAME", "INSTALL")]
@@ -341,6 +373,10 @@ def main(argv=None):
     p.add_argument("repo", help="owner/repo or https://github.com/owner/repo")
     p.add_argument("--mine", action="store_true", help="show it in My Apps instead of the Library")
     p.set_defaults(func=cmd_add)
+    p = sub.add_parser("downloads", help="download counts of your apps' releases (admin)")
+    p.add_argument("--releases", type=int, default=3, help="releases to show per app (default 3)")
+    p.add_argument("--json", action="store_true")
+    p.set_defaults(func=cmd_downloads)
     p = sub.add_parser("favorites", help="list favorite apps")
     p.set_defaults(func=cmd_favorites)
 

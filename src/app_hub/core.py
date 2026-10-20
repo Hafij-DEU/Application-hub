@@ -454,6 +454,27 @@ def fetch_release(app):
     return rel
 
 
+def download_stats(app):
+    """[(tag, date, downloads)] for the app's published releases, newest first.
+    Counts the .deb files (the .zip for extensions). GitHub counts every download,
+    including the owner's own installs and updates."""
+    try:
+        data = _get_json(f"{API}/repos/{app.repo}/releases?per_page=100")
+    except HubError:
+        raise
+    except Exception as e:  # e.g. a stale cache entry that is not a list
+        raise HubError(str(e)) from None
+    kind = ".zip" if app.extension else ".deb"
+    out = []
+    for r in data if isinstance(data, list) else []:
+        if r.get("draft"):
+            continue
+        n = sum(a.get("download_count", 0) for a in r.get("assets", [])
+                if a.get("name", "").lower().endswith(kind))
+        out.append((r.get("tag_name", ""), (r.get("published_at") or "")[:10], n))
+    return out
+
+
 def check_all(apps, on_done=None):
     """Fetch latest releases in parallel; on_done(app) runs in a worker thread."""
     def one(app):

@@ -356,8 +356,7 @@ class HomePage:
         add_btn = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Add your own app from GitHub")
         add_btn.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add App"))
         add_btn.connect("clicked", lambda *_: AddAppDialog(win, self, "mine").present(win))
-        add_btn.set_visible(core.is_admin())   # admin PIN entered in Preferences
-        self.add_btn = add_btn
+        self.add_btn = add_btn                 # shown in admin mode (set_admin)
         self.hub = HubSection(win, "My Apps", "Installed from each app's latest GitHub release",
                               self.my_apps(), on_removed=self.reload, extra=add_btn)
         self.ext_hub = HubSection(win, "Extensions",
@@ -374,8 +373,15 @@ class HomePage:
                                        subtitle="Star apps in All Apps or AI Install to keep them here")
         self.fav_empty.add_prefix(Gtk.Image(icon_name="non-starred-symbolic"))
         self.fav_group.add(self.fav_empty)
+        self.dl_group = Adw.PreferencesGroup(
+            title="Downloads",
+            description="Admin only · GitHub release downloads, including your own installs and updates")
+        self.dl_group.set_header_suffix(flat_button("view-refresh-symbolic", "Refresh counts",
+                                                    self.load_downloads))
+        self.dl_rows = []
         self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.ext_hub.group,
-                                       self.fav_group)
+                                       self.dl_group, self.fav_group)
+        self.set_admin(core.is_admin())
         self.reload_favorites()
         self.refresh()
 
@@ -389,6 +395,46 @@ class HomePage:
         ids = {a.id for a in catalog}
         return [a for a in catalog if a.section not in ("self", "extension")] + [
             a for a in library.load_apps() if a.section == "mine" and a.id not in ids]
+
+    def set_admin(self, admin):
+        """Admin mode shows Add App in My Apps and the Downloads section."""
+        self.add_btn.set_visible(admin)
+        self.dl_group.set_visible(admin)
+        if admin and not self.dl_rows:
+            self.load_downloads()
+
+    def load_downloads(self):
+        for row in self.dl_rows:
+            self.dl_group.remove(row)
+        self.dl_rows = []
+        for app in self.apps:
+            row = Adw.ExpanderRow(title=GLib.markup_escape_text(app.name), subtitle="counting…")
+            icon = Gtk.Image(pixel_size=32)
+            set_hub_icon(icon, app)
+            row.add_prefix(icon)
+            self.dl_group.add(row)
+            self.dl_rows.append(row)
+
+        def fill(row, stats, error):
+            if error:
+                row.set_subtitle(GLib.markup_escape_text(error))
+                return
+            total = sum(n for _, _, n in stats)
+            row.set_subtitle(f"{total} download{'' if total == 1 else 's'} · {len(stats)} "
+                             f"release{'' if len(stats) == 1 else 's'}")
+            for tag, date, n in stats:
+                child = Adw.ActionRow(title=GLib.markup_escape_text(tag), subtitle=date)
+                child.add_suffix(Gtk.Label(label=str(n), css_classes=["numeric"]))
+                row.add_row(child)
+
+        def work(pairs):
+            for app, row in pairs:
+                try:
+                    stats, error = core.download_stats(app), ""
+                except core.HubError as e:
+                    stats, error = [], str(e)
+                _idle(fill, row, stats, error)
+        _thread(work, list(zip(self.apps, self.dl_rows)))
 
     def reload(self):
         """Re-read My Apps after an app was added or removed."""
@@ -1507,7 +1553,7 @@ class Window(Adw.ApplicationWindow):
             admin = core.is_admin()
             pin_row.set_visible(not admin)
             on_row.set_visible(admin)
-            self.home.add_btn.set_visible(admin)
+            self.home.set_admin(admin)
 
         def set_admin(on):
             data = ai.load_settings()
