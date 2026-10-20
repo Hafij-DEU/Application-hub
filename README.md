@@ -57,12 +57,15 @@ And more:
 
 ## Install
 
-Download `app-hub_<version>_all.deb` from the
-[latest release](https://github.com/Hafij-DEU/Application-hub/releases/latest), then:
+Run this one command. It downloads the latest release and installs it:
 
 ```bash
-sudo apt install ./app-hub_*_all.deb
+url=$(curl -fsSL https://api.github.com/repos/Hafij-DEU/Application-hub/releases/latest | grep -o 'https://[^"]*_all\.deb' | head -1) && curl -fL "$url" -o /tmp/app-hub.deb && sudo apt install -y /tmp/app-hub.deb
 ```
+
+Or install by hand: download `app-hub_<version>_all.deb` from the
+[latest release](https://github.com/Hafij-DEU/Application-hub/releases/latest), then run
+`sudo apt install ./app-hub_*_all.deb`.
 
 Requires Ubuntu 24.04 or newer, or Debian 13 (Python 3.10+, GTK 4.14+, libadwaita 1.5+).
 Snap and Flatpak support turns on when `snapd` or `flatpak` is installed.
@@ -78,6 +81,7 @@ From then on, App Hub updates itself from its own row at the top of My Apps.
 | DocScan | Scan documents with your camera and export PDF | [Hafij-DEU/Scan](https://github.com/Hafij-DEU/Scan) |
 | Extendo | Use an Android tablet as a second monitor | [Hafij-BGE/Second-monitor](https://github.com/Hafij-BGE/Second-monitor) |
 | Astra Player | Video and music player with every codec built in | [Hafij-DEU/video-player](https://github.com/Hafij-DEU/video-player) |
+| Toggle Internal Keyboard | Turn the laptop keyboard on/off; auto-fix stuck Shift | [Hafij-DEU/laptop-keyboard-toggle](https://github.com/Hafij-DEU/laptop-keyboard-toggle) |
 
 ## Setup tips
 
