@@ -23,7 +23,7 @@ Flatpak and AppImage, with a single password prompt for everything.
 
 | | |
 |---|---|
-| **My Apps** | App cards with icon, status and one button: installs and updates apps straight from their latest GitHub release, plus GNOME Shell extensions in its **Extensions** group. **Add App** (admin only) adds more: paste a repo link, or an account link to list every project that publishes a `.deb`. |
+| **My Apps** | App cards with icon, status and one button: installs and updates apps straight from their latest GitHub release, plus GNOME Shell extensions in its **Extensions** group. |
 | **Updates** | Checks GitHub, Deb, Snap, Flatpak and system packages, and lists every pending update with old → new version and release notes. Update one app, or everything at once. The tab shows how many updates are waiting. |
 | **Library** | Any GitHub project with `.deb` releases, as cards grouped by owner. Starts with 13 creative apps from [storytold](https://github.com/storytold) (PhotoCraft, VectorCraft, FilmCraft, …). Add more by link, by account, or by name with AI. |
 | **All Apps** | Every installed desktop app with its channel (Deb, Snap, Flatpak, AppImage). Update, open, star or uninstall each one. **Recently Uninstalled** brings back anything removed in the last 60 days, by any tool. |
@@ -101,15 +101,6 @@ network. App Hub uses your GitHub CLI login (`gh auth login`) automatically, or 
 **Menu ▸ Preferences** (it needs no permissions); either raises the limit to 5000. When GitHub
 can't be reached, App Hub shows its last answer and says so.
 
-**Admin mode.** Enter the admin PIN in **Menu ▸ Preferences ▸ Admin** to turn it on on this
-computer; **Lock** turns it off again. Admin mode shows:
-
-- **Add App** in My Apps, to add more apps there. The Library's own Add App is open to everyone.
-- **Downloads** in My Apps: how often each release of every app and extension was downloaded
-  from GitHub (your own installs included). The same counts come from `app-hub downloads`.
-
-The maintainer sets the PIN with `./set-admin-pin.py`; only a salted hash is stored.
-
 **AI Install.** Add a free Gemini API key in **Menu ▸ Preferences**
 ([get one here](https://aistudio.google.com/apikey)), or set `GEMINI_API_KEY`.
 
@@ -130,8 +121,7 @@ Everything in the window also works from a terminal:
 | `app-hub update-all --dry-run [--json]` | List pending app and system updates; install nothing |
 | `app-hub apps [--channel snap] [--no-updates]` | Every installed app with channel and updates |
 | `app-hub recent` | Recently uninstalled apps |
-| `app-hub downloads [--releases N] [--json]` | Download counts of your apps' releases (admin) |
-| `app-hub add [--mine] owner/repo` | Add a GitHub project to the Library (or to My Apps; asks for the admin PIN) |
+| `app-hub add owner/repo` | Add a GitHub project to the Library |
 | `app-hub install-deb FILE.deb` | Install a local `.deb` with its dependencies |
 | `app-hub ai "pdf editor"` | Ask Gemini; every suggestion is verified |
 | `app-hub favorites` | List favorite apps |
@@ -163,7 +153,7 @@ Hub turns it on in your `enabled-extensions` setting; it loads at your next logi
 
 | Path | Contents |
 |---|---|
-| `~/.config/app-hub/settings.json` | Gemini key and model, GitHub token, admin mode (readable only by you) |
+| `~/.config/app-hub/settings.json` | Gemini key and model, GitHub token (readable only by you) |
 | `~/.config/app-hub/library.json` | Apps you added, and default Library apps you removed |
 | `~/.local/share/app-hub/` | Favorites, uninstall history, Library icons |
 | `~/.cache/app-hub/` | GitHub answers and downloaded releases |
@@ -179,9 +169,8 @@ cd Application-hub
 
 The app is plain Python in `src/app_hub/`: `gui.py` is the window, `cli.py` the terminal front
 end, `core.py` the GitHub and dpkg logic, and `inventory.py` lists apps across channels.
-`src/app-hub-helper` is the root helper, `src/catalog.json` lists the My Apps apps and extensions
-(and the admin PIN hash), and `src/library-default.json` the default Library. `./set-admin-pin.py`
-changes the admin PIN.
+`src/app-hub-helper` is the root helper, `src/catalog.json` lists the My Apps apps and extensions,
+and `src/library-default.json` the default Library.
 
 ## Credits
 
