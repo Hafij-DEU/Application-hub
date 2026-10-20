@@ -24,9 +24,9 @@ Flatpak and AppImage, with a single password prompt for everything.
 
 | | |
 |---|---|
-| **My Apps** | Installs and updates apps straight from their latest GitHub release, plus GNOME Shell extensions in its **Extensions** group. **Add App** (admin only) adds more: paste a repo link, or an account link to list every project that publishes a `.deb`. |
+| **My Apps** | App cards with icon, status and one button: installs and updates apps straight from their latest GitHub release, plus GNOME Shell extensions in its **Extensions** group. **Add App** (admin only) adds more: paste a repo link, or an account link to list every project that publishes a `.deb`. |
 | **Updates** | Checks GitHub, Deb, Snap, Flatpak and system packages, and lists every pending update with old → new version and release notes. Update one app, or everything at once. The tab shows how many updates are waiting. |
-| **Library** | Any GitHub project with `.deb` releases, grouped by owner. Starts with 13 creative apps from [storytold](https://github.com/storytold) (PhotoCraft, VectorCraft, FilmCraft, …). Add more by link, by account, or by name with AI. |
+| **Library** | Any GitHub project with `.deb` releases, as cards grouped by owner. Starts with 13 creative apps from [storytold](https://github.com/storytold) (PhotoCraft, VectorCraft, FilmCraft, …). Add more by link, by account, or by name with AI. |
 | **All Apps** | Every installed desktop app with its channel (Deb, Snap, Flatpak, AppImage). Update, open, star or uninstall each one. **Recently Uninstalled** brings back anything removed in the last 60 days, by any tool. |
 | **AI Install** | Ask Gemini how to install an app. Every answer is checked locally (apt cache, Snap Store, Flatpak remote, GitHub) before you confirm. Commands written by the AI are never run. |
 | **Cleaner** | Finds what removed apps left behind: folders in your home (moved to the Trash, not deleted), config files, unused dependencies, old snap revisions, unused Flatpak runtimes and cached `.deb` files. |
@@ -42,7 +42,9 @@ And more:
 - ⭐ **Favorites.** Star apps, then install them all on a new machine with one click.
 - 🧭 **Ubuntu staged updates.** Phased (staged-rollout) updates are listed separately and can be
   installed early if you choose.
-- 🎨 **Native look.** GTK 4 and libadwaita, following your system's light/dark style and accent color.
+- 🎨 **Modern, native look.** App cards with status chips (installed version, update available,
+  download size) and a ⋮ menu for Release page, Uninstall and Remove. GTK 4 and libadwaita,
+  following your system's light/dark style and accent color.
 
 <table>
   <tr>
@@ -69,7 +71,7 @@ Or install by hand: download `app-hub_<version>_all.deb` from the
 
 Requires Ubuntu 24.04 or newer, or Debian 13 (Python 3.10+, GTK 4.14+, libadwaita 1.5+).
 Snap and Flatpak support turns on when `snapd` or `flatpak` is installed.
-From then on, App Hub updates itself from its own row at the top of My Apps.
+From then on, App Hub updates itself from its own banner at the top of My Apps.
 
 ### Apps in My Apps
 
