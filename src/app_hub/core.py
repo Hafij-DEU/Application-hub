@@ -74,7 +74,11 @@ class App:
     installed_as: str = ""                         # package actually installed
     icon: str = ""                                 # icon file (Library apps)
     owner: str = ""                                # Library group; "" = My Apps
-    section: str = ""                              # "self" = App Hub itself, "mine" = added to My Apps
+    section: str = ""                              # "self" = App Hub itself, "mine" = added to My Apps,
+                                                   # "extension" = GNOME Shell extension (My Apps ▸ Extensions)
+    extension: str = ""                            # GNOME Shell extension UUID (installed from a release .zip)
+    system: bool = False                           # extension goes to /usr/share (needs root), not ~/.local
+    gdm: bool = False                              # system extension is also turned on for the login screen
     release: Release | None = None
     error: str = ""
 
@@ -109,7 +113,8 @@ class App:
         elif self.release is None:
             parts.append("checking…")
         elif not self.release.asset_url:
-            parts.append(f"{self.release.tag} has no .deb for this system")
+            parts.append(f"{self.release.tag} has no " + ("extension .zip" if self.extension
+                                                           else ".deb for this system"))
         elif self.installed and not self.update_available and is_newer(
                 clean_version(self.installed), self.release.version):
             parts.append("newer than the latest release with a .deb" if self.release.skipped
@@ -138,6 +143,40 @@ def load_catalog(include_library=True):
         mine = {a.id for a in apps}
         apps += [a for a in library.load_apps() if a.id not in mine]
     return apps
+
+
+# --- admin PIN: Add App in My Apps only for the admin ----------------------
+# catalog.json may hold {"admin_pin": {"salt": HEX, "hash": HEX, "iterations": N}}, written by
+# set-admin-pin.py. Entering the PIN in Preferences stores the hash in settings.json, which
+# shows Add App in My Apps on that computer. Without an admin_pin, Add App is always shown.
+
+def admin_pin():
+    try:
+        with open(CATALOG, encoding="utf-8") as f:
+            pin = json.load(f).get("admin_pin")
+    except (OSError, ValueError):
+        return None
+    return pin if isinstance(pin, dict) and pin.get("hash") and pin.get("salt") else None
+
+
+def pin_hash(pin, salt_hex, iterations):
+    return hashlib.pbkdf2_hmac("sha256", pin.encode(), bytes.fromhex(salt_hex), int(iterations)).hex()
+
+
+def check_admin_pin(pin):
+    """True if no admin PIN is set, or `pin` matches it."""
+    stored = admin_pin()
+    if not stored:
+        return True
+    import hmac
+    return hmac.compare_digest(pin_hash(pin, stored["salt"], stored.get("iterations", 600000)),
+                               stored["hash"])
+
+
+def is_admin():
+    """Admin mode is on for this user (PIN entered in Preferences), or no PIN is set."""
+    stored = admin_pin()
+    return not stored or _settings().get("admin_unlock") == stored["hash"]
 
 
 def find_apps(apps, names):
@@ -188,6 +227,9 @@ def installed_version(package):
 def refresh_installed(apps):
     for app in apps:
         app.installed, app.installed_as = None, ""
+        if app.extension:
+            app.installed = extension_version(app)
+            continue
         for pkg in [app.package, *app.replaces]:
             version = installed_version(pkg)
             if version:
@@ -363,10 +405,21 @@ def pick_asset(assets, pattern="", arch=None, distro=None):
     return best
 
 
+def pick_zip(assets, pattern=""):
+    """The GNOME Shell extension .zip of a release (prefers *.shell-extension.zip)."""
+    zips = [a for a in assets if a["name"].lower().endswith(".zip")
+            and (not pattern or re.search(pattern, a["name"]))]
+    return next((a for a in zips if "shell-extension" in a["name"]), zips[0] if zips else None)
+
+
+def _pick(app, assets):
+    return pick_zip(assets, app.asset_pattern) if app.extension else pick_asset(assets, app.asset_pattern)
+
+
 def fetch_release(app):
     data = _get_json(f"{API}/repos/{app.repo}/releases/latest")
     skipped = ""
-    if not pick_asset(data.get("assets", []), app.asset_pattern):
+    if not _pick(app, data.get("assets", [])):
         # The newest release may ship only other platforms (e.g. a Windows-only fix):
         # use the newest stable release that has a .deb for this system.
         try:
@@ -374,8 +427,7 @@ def fetch_release(app):
         except HubError:
             recent = []
         for r in recent if isinstance(recent, list) else []:
-            if not r.get("draft") and not r.get("prerelease") and pick_asset(r.get("assets", []),
-                                                                             app.asset_pattern):
+            if not r.get("draft") and not r.get("prerelease") and _pick(app, r.get("assets", [])):
                 skipped = data.get("tag_name", "")
                 stale = data if isinstance(data, Stale) else None
                 data = r
@@ -388,7 +440,7 @@ def fetch_release(app):
                   notes=(data.get("body") or "").strip(), published=data.get("published_at") or "",
                   stale=data.since if isinstance(data, Stale) else 0, skipped=skipped)
     assets = data.get("assets", [])
-    asset = pick_asset(assets, app.asset_pattern)
+    asset = _pick(app, assets)
     if asset:
         rel.asset_name = asset["name"]
         rel.asset_url = asset["browser_download_url"]
@@ -438,7 +490,7 @@ def download(app, progress=None, cancel: threading.Event | None = None):
     """Download the app's release .deb into the cache and verify it. Returns the path."""
     rel = app.release
     if not rel or not rel.asset_url:
-        raise HubError(f"{app.name}: no .deb to download")
+        raise HubError(f"{app.name}: no {'extension .zip' if app.extension else '.deb'} to download")
     folder = os.path.join(CACHE_DIR, app.id)
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, rel.asset_name)
@@ -478,6 +530,8 @@ def download(app, progress=None, cancel: threading.Event | None = None):
         _unlink(part)
         raise HubError(f"{app.name}: checksum mismatch, download discarded")
     os.replace(part, path)
+    if app.extension:
+        check_extension_zip(path, app.extension)
     return path
 
 
@@ -498,6 +552,155 @@ def _unlink(path):
 
 def clear_cache(app):
     shutil.rmtree(os.path.join(CACHE_DIR, app.id), ignore_errors=True)
+
+
+def finish_install(app, log=None):
+    """After a successful install: drop the download; turn extensions on for this user."""
+    clear_cache(app)
+    if app.extension:
+        for note in enable_extension(app.extension):
+            if log:
+                log(f"{app.name}: {note}")
+
+
+# --- GNOME Shell extensions -----------------------------------------------
+
+USER_EXT_DIR = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"),
+                            "gnome-shell", "extensions")
+SYSTEM_EXT_DIR = "/usr/share/gnome-shell/extensions"
+
+
+def extension_dir(app):
+    return os.path.join(SYSTEM_EXT_DIR if app.system else USER_EXT_DIR, app.extension)
+
+
+def extension_version(app):
+    """Installed version from metadata.json (version-name, else version), or None."""
+    try:
+        with open(os.path.join(extension_dir(app), "metadata.json"), encoding="utf-8") as f:
+            meta = json.load(f)
+    except (OSError, ValueError):
+        return None
+    version = meta.get("version-name") or meta.get("version")
+    return str(version) if version is not None else "0"
+
+
+def check_extension_zip(path, uuid):
+    """Refuse a .zip that is not the expected extension."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            meta = json.loads(z.read("metadata.json"))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        _unlink(path)
+        raise HubError(f"{os.path.basename(path)} is not a GNOME Shell extension") from None
+    if meta.get("uuid") != uuid:
+        _unlink(path)
+        raise HubError(f"{os.path.basename(path)} contains {meta.get('uuid')!r}, expected {uuid!r}")
+
+
+def _shell_list(key):
+    out = _run(["gsettings", "get", "org.gnome.shell", key]).stdout.strip()
+    if out.startswith("@as "):
+        out = out[4:]
+    try:
+        import ast
+        value = ast.literal_eval(out)
+        return list(value) if isinstance(value, (list, tuple)) else []
+    except (ValueError, SyntaxError):
+        return []
+
+
+def _shell_set_list(key, values):
+    return _run(["gsettings", "set", "org.gnome.shell", key,
+                 "[" + ", ".join(repr(v) for v in values) + "]"]).returncode == 0
+
+
+def enable_extension(uuid):
+    """Turn an installed extension on for this user (takes effect at the next login)."""
+    if not shutil.which("gsettings"):
+        return ["turn it on in the Extensions app"]
+    enabled, disabled = _shell_list("enabled-extensions"), _shell_list("disabled-extensions")
+    ok = uuid in enabled or _shell_set_list("enabled-extensions", enabled + [uuid])
+    if uuid in disabled:
+        _shell_set_list("disabled-extensions", [u for u in disabled if u != uuid])
+    if not ok:
+        return ["could not turn it on; use the Extensions app"]
+    notes = ["turned on; log out and back in to load it"]
+    if _run(["gsettings", "get", "org.gnome.shell", "disable-user-extensions"]).stdout.strip() == "true":
+        notes.append("extensions are switched off in the Extensions app; switch them on")
+    return notes
+
+
+def disable_extension(uuid):
+    if shutil.which("gsettings"):
+        enabled = _shell_list("enabled-extensions")
+        if uuid in enabled:
+            _shell_set_list("enabled-extensions", [u for u in enabled if u != uuid])
+
+
+def install_user_extension(app, path, log=None):
+    """Install an extension .zip for this user only (no password)."""
+    if not shutil.which("gnome-extensions"):
+        raise HubError("gnome-extensions is missing (it comes with gnome-shell)")
+    rc, out = run_command(["gnome-extensions", "install", "--force", path], log)
+    if rc != 0:
+        raise HubError(f"{app.name}: gnome-extensions install failed: {out.strip()[-200:]}")
+
+
+def root_steps(staged):
+    """Helper plan steps for downloaded apps that need root (.deb files, system extensions)."""
+    debs = [(a.package, p) for a, p in staged if not a.extension]
+    steps = install_plan(debs) if debs else []
+    steps += [["install-extension", a.extension, p, "gdm" if a.gdm else ""]
+              for a, p in staged if a.extension and a.system]
+    return steps
+
+
+def install_staged(staged, log=None):
+    """Install downloaded apps: personal extensions directly, the rest with one password
+    prompt. Returns (rc, output)."""
+    failed, out = 0, ""
+    for app, path in staged:
+        if app.extension and not app.system:
+            try:
+                install_user_extension(app, path, log)
+                finish_install(app, log)
+            except HubError as e:
+                failed = 1
+                if log:
+                    log(str(e))
+    steps = root_steps(staged)
+    rc = 0
+    if steps:
+        rc, out = run_helper(steps, log)
+        if rc == 0:
+            for app, _ in staged:
+                if not app.extension or app.system:
+                    finish_install(app, log)
+    return (rc or failed), out
+
+
+def uninstall_extension(app, log=None):
+    """Remove an extension (system ones through the helper). Returns (rc, output)."""
+    disable_extension(app.extension)
+    if app.system:
+        return run_helper([["remove-extension", app.extension]], log)
+    path = extension_dir(app)
+    shutil.rmtree(path, ignore_errors=True)
+    if log:
+        log(f"removed {path}; log out and back in to unload it")
+    return 0, ""
+
+
+def open_extension(app):
+    """Open an extension's settings, or the Extensions app."""
+    for cmd in (["gnome-extensions", "prefs", app.extension], ["gtk-launch", "org.gnome.Extensions"],
+                ["gtk-launch", "com.mattjakeman.ExtensionManager"]):
+        if shutil.which(cmd[0]) and subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                                                   stderr=subprocess.DEVNULL).returncode == 0:
+            return
+    raise HubError(f"log out and back in to load {app.name}, then open it in the Extensions app")
 
 
 # --- privileged helper ----------------------------------------------------
@@ -536,6 +739,8 @@ def run_helper(plan, on_line=None):
 
 
 def launch(app):
+    if app.extension:
+        return open_extension(app)
     names = [app.desktop] if app.desktop else []
     names += [os.path.basename(p) for p in _package_desktop_files(app.installed_as or app.package)]
     for name in names:

@@ -279,15 +279,24 @@ class HubSection:
                     _idle(row.sync)
             if not staged:
                 return 0, ""
-            rc, out = core.run_helper(core.install_plan([(a.package, p) for a, p in staged]), log)
-            if rc == 0:
-                for app, _ in staged:
-                    core.clear_cache(app)
-            return rc, out
+            return core.install_staged(staged, log)
         names = ", ".join(a.name for a in apps)
         self.win.run_job(f"Install {names}", work)
 
     def uninstall(self, app):
+        if app.extension:
+            dialog = Adw.AlertDialog(
+                heading=f"Uninstall {app.name}?",
+                body="The extension is turned off and removed. Log out and back in to unload it."
+                     + (" It is also removed from the login screen." if app.gdm else ""))
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("remove", "Uninstall")
+            dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.connect("response", lambda _d, r: r == "remove" and self.win.run_job(
+                f"Uninstall {app.name}", lambda log: core.uninstall_extension(app, log)))
+            dialog.present(self.win)
+            return
         pkg = app.installed_as or app.package
         sysapp = self.win.installed.get(f"apt:{pkg}") or inventory.SysApp(
             "apt", pkg, app.name, version=app.installed or "", hub_id=app.id)
@@ -347,8 +356,13 @@ class HomePage:
         add_btn = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Add your own app from GitHub")
         add_btn.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add App"))
         add_btn.connect("clicked", lambda *_: AddAppDialog(win, self, "mine").present(win))
+        add_btn.set_visible(core.is_admin())   # admin PIN entered in Preferences
+        self.add_btn = add_btn
         self.hub = HubSection(win, "My Apps", "Installed from each app's latest GitHub release",
                               self.my_apps(), on_removed=self.reload, extra=add_btn)
+        self.ext_hub = HubSection(win, "Extensions",
+                                  "GNOME Shell extensions · log out and back in after installing or updating",
+                                  [a for a in catalog if a.section == "extension"])
         core.refresh_installed(self.apps)
 
         self.fav_group = Adw.PreferencesGroup(
@@ -360,19 +374,20 @@ class HomePage:
                                        subtitle="Star apps in All Apps or AI Install to keep them here")
         self.fav_empty.add_prefix(Gtk.Image(icon_name="non-starred-symbolic"))
         self.fav_group.add(self.fav_empty)
-        self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.fav_group)
+        self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.ext_hub.group,
+                                       self.fav_group)
         self.reload_favorites()
         self.refresh()
 
     @property
     def apps(self):
-        return self.self_hub.apps + self.hub.apps
+        return self.self_hub.apps + self.hub.apps + self.ext_hub.apps
 
     @staticmethod
     def my_apps():
         catalog = core.load_catalog(include_library=False)
         ids = {a.id for a in catalog}
-        return [a for a in catalog if a.section != "self"] + [
+        return [a for a in catalog if a.section not in ("self", "extension")] + [
             a for a in library.load_apps() if a.section == "mine" and a.id not in ids]
 
     def reload(self):
@@ -385,10 +400,12 @@ class HomePage:
     def refresh(self):
         self.self_hub.refresh()
         self.hub.refresh()
+        self.ext_hub.refresh()
 
     def sync(self):
         self.self_hub.sync()
         self.hub.sync()
+        self.ext_hub.sync()
         for row in self.fav_rows:
             row.sync()
         missing = [r for r in self.fav_rows if self.win.inventory_loaded and not r.installed_app()]
@@ -1459,6 +1476,8 @@ class Window(Adw.ApplicationWindow):
             "https://github.com/settings/personal-access-tokens/new").launch(self, None, None, None))
         gh.add(tok_link)
         page.add(gh)
+        if core.admin_pin():
+            page.add(self.admin_group(dialog))
         dialog.add(page)
 
         def on_closed(*_):
@@ -1472,6 +1491,45 @@ class Window(Adw.ApplicationWindow):
             self.ai_page.sync_key()
         dialog.connect("closed", on_closed)
         dialog.present(self)
+
+    def admin_group(self, dialog):
+        """Preferences ▸ Admin: the admin PIN turns on Add App in My Apps."""
+        group = Adw.PreferencesGroup(title="Admin",
+                                     description="The admin PIN shows Add App in My Apps on this computer.")
+        pin_row = Adw.PasswordEntryRow(title="Admin PIN", show_apply_button=True)
+        on_row = Adw.ActionRow(title="Admin mode is on", subtitle="Add App is shown in My Apps")
+        on_row.add_prefix(Gtk.Image(icon_name="security-high-symbolic"))
+        on_row.add_suffix(text_button("Lock", lambda: set_admin(False)))
+        group.add(pin_row)
+        group.add(on_row)
+
+        def show():
+            admin = core.is_admin()
+            pin_row.set_visible(not admin)
+            on_row.set_visible(admin)
+            self.home.add_btn.set_visible(admin)
+
+        def set_admin(on):
+            data = ai.load_settings()
+            if on:
+                data["admin_unlock"] = core.admin_pin()["hash"]
+            else:
+                data.pop("admin_unlock", None)
+            ai.save_settings(data)
+            show()
+            dialog.add_toast(Adw.Toast(title="Admin mode on: Add App is in My Apps" if on
+                                       else "Admin mode off"))
+
+        def apply(row):
+            ok = core.check_admin_pin(row.get_text())
+            row.set_text("")
+            if ok:
+                set_admin(True)
+            else:
+                dialog.add_toast(Adw.Toast(title="Wrong PIN"))
+        pin_row.connect("apply", apply)
+        show()
+        return group
 
     def hub_apps(self):
         hub = list(self.home.apps) if hasattr(self, "home") else []
@@ -1652,6 +1710,14 @@ class Window(Adw.ApplicationWindow):
     # --- actions ---
 
     def open_hub(self, app):
+        if app.extension:
+            def work():
+                try:
+                    core.open_extension(app)
+                except core.HubError as e:
+                    _idle(self.toast, str(e))
+            _thread(work)
+            return
         path = f"/usr/share/applications/{app.desktop}" if app.desktop and not app.renamed else ""
         try:
             if not launch_desktop(path, app):

@@ -73,8 +73,15 @@ def run(pending, log, system=False, progress=None, cancel=None, phased=False):
     plan = [["keep-going"]]
     if system:
         plan.append(["apt-refresh"])
-    for app, path in staged:
-        plan.append(["install-deb", app.package, path])
+    for app, path in [(a, p) for a, p in staged if a.extension and not a.system]:
+        try:   # personal extensions need no password
+            core.install_user_extension(app, path, emit)
+            core.finish_install(app, emit)
+        except core.HubError as e:
+            emit(str(e))
+            failed += 1
+    staged = [(a, p) for a, p in staged if not a.extension or a.system]
+    plan += core.root_steps(staged)
     apt = [p.obj.id for p in pending if p.kind == "apt"]
     if apt and not system:
         plan.append(["apt-upgrade", *apt])
@@ -92,7 +99,7 @@ def run(pending, log, system=False, progress=None, cancel=None, phased=False):
         rc, _ = core.run_helper(plan, emit)
         if rc == 0:
             for app, _ in staged:
-                core.clear_cache(app)
+                core.finish_install(app, emit)
     if rc in core.AUTH_CANCELLED:
         return rc, "\n".join(lines)
     return (1 if (rc or failed) else 0), "\n".join(lines)

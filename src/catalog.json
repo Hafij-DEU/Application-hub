@@ -1,4 +1,9 @@
 {
+  "admin_pin": {
+    "salt": "6cc921e77e166bc4c80c38e2c0b73db8",
+    "hash": "3b7f1b44acc664936a6ffd99e5b9eae51a4e5ac678a05b969d05622b8dd29182",
+    "iterations": 600000
+  },
   "apps": [
     {
       "id": "app-hub",
@@ -67,6 +72,26 @@
       "repo": "Hafij-DEU/laptop-keyboard-toggle",
       "package": "toggle-internal-keyboard",
       "desktop": "io.github.hafij_bge.ToggleInternalKeyboard.desktop"
+    },
+    {
+      "id": "fusion-desk",
+      "name": "Fusion Desk",
+      "summary": "Taskbar, start menu and widgets in one panel",
+      "repo": "Hafij-DEU/Fusion-desk-gnome-extension",
+      "package": "fusion-desk",
+      "section": "extension",
+      "extension": "fusion-desk@hafij-deu.github.io"
+    },
+    {
+      "id": "signin-button",
+      "name": "Sign-In Button",
+      "summary": "Clickable sign-in arrow on the login and lock screens",
+      "repo": "Hafij-DEU/gnome-signin-button",
+      "package": "signin-button",
+      "section": "extension",
+      "extension": "signin-button@hafij-deu.github.io",
+      "system": true,
+      "gdm": true
     }
   ]
 }

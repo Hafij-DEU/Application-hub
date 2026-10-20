@@ -15,19 +15,26 @@ PLAN is a JSON list of steps, run in order, stopping at the first failure:
   ["snap-refresh", NAME]         ["snap-remove", NAME, REVISION_OR_EMPTY, "purge"|""]
   ["flatpak-install", REMOTE, REF]   ["flatpak-update", REF]
   ["flatpak-uninstall", REF, "delete-data"|""]   ["flatpak-unused"]
+  ["install-extension", UUID, "/path/ext.zip", "gdm"|""]
+      GNOME Shell extension into /usr/share/gnome-shell/extensions; "gdm" also
+      turns it on for the login screen
+  ["remove-extension", UUID]
 
 Flatpak steps act on the system installation. Every name is checked
 against a strict pattern so nothing can be passed as an option.
 --simulate prints the commands (and runs apt-get -s) without root.
 """
 
+import ast
 import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 CACHE = "/var/cache/app-hub"
 ENV = {
@@ -45,6 +52,10 @@ CHANNEL = re.compile(r"[a-z0-9][a-z0-9./-]*")
 REV = re.compile(r"x?[0-9]+")
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9._-]*){0,3}(//[A-Za-z0-9._-]+)?")
 REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+UUID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*")
+SYSTEM_EXT_DIR = "/usr/share/gnome-shell/extensions"
+GDM_DCONF = "/usr/share/gdm/dconf/95-app-hub-extensions"
+GDM_GENERATE = "/usr/share/gdm/generate-config"
 
 
 def die(msg, code=2):
@@ -102,14 +113,102 @@ class Runner:
             return 0
         return rc
 
-    def stage(self, pkg, path):
-        if not isinstance(path, str) or not path.endswith(".deb") or not os.path.isfile(path):
-            die(f"not a .deb file: {path!r}")
+    def tempdir(self):
         if self.workdir is None:
             if not self.simulate:
                 os.makedirs(CACHE, mode=0o755, exist_ok=True)
             self.workdir = tempfile.mkdtemp(prefix="install-", dir=None if self.simulate else CACHE)
             os.chmod(self.workdir, 0o755)  # apt's _apt sandbox user must read the files
+        return self.workdir
+
+    def install_extension(self, uuid, path, gdm):
+        check(UUID, uuid, "extension uuid")
+        if gdm not in ("gdm", ""):
+            die("install-extension takes 'gdm' or ''")
+        if not isinstance(path, str) or not path.endswith(".zip") or not os.path.isfile(path):
+            die(f"not a .zip file: {path!r}")
+        # Copy first, then check the copy, so the file cannot change after the check.
+        copy = os.path.join(self.tempdir(), f"{len(os.listdir(self.workdir))}.zip")
+        with open(path, "rb") as src, open(copy, "xb") as out:
+            shutil.copyfileobj(src, out)
+        try:
+            with zipfile.ZipFile(copy) as z:
+                meta = json.loads(z.read("metadata.json"))
+                for info in z.infolist():
+                    parts = info.filename.replace("\\", "/").split("/")
+                    if (info.filename.startswith("/") or ".." in parts
+                            or stat.S_ISLNK(info.external_attr >> 16)):
+                        die(f"unsafe path in extension zip: {info.filename!r}")
+                if meta.get("uuid") != uuid:
+                    die(f"zip contains extension {meta.get('uuid')!r}, expected {uuid!r}")
+                final = os.path.join(SYSTEM_EXT_DIR, uuid)
+                print(f"+ install extension {uuid} into {final}" + (" (login screen)" if gdm else ""),
+                      flush=True)
+                if self.simulate:
+                    return 0
+                new = os.path.join(SYSTEM_EXT_DIR, f".{uuid}.app-hub-new")
+                old = os.path.join(SYSTEM_EXT_DIR, f".{uuid}.app-hub-old")
+                for d in (new, old):
+                    shutil.rmtree(d, ignore_errors=True)
+                os.makedirs(new)
+                z.extractall(new)
+        except (OSError, KeyError, ValueError, zipfile.BadZipFile) as e:
+            die(f"cannot read extension zip: {e}")
+        for root, dirs, files in os.walk(new):
+            os.chmod(root, 0o755)
+            for f in files:
+                os.chmod(os.path.join(root, f), 0o644)
+        if os.path.isdir(os.path.join(new, "schemas")):
+            rc = subprocess.call(["glib-compile-schemas", os.path.join(new, "schemas")], env=ENV)
+            if rc != 0:
+                shutil.rmtree(new, ignore_errors=True)
+                return rc
+        if os.path.isdir(final):
+            os.rename(final, old)
+        os.rename(new, final)
+        shutil.rmtree(old, ignore_errors=True)
+        if gdm:
+            self.gdm_extension(uuid, True)
+        return 0
+
+    def remove_extension(self, uuid):
+        check(UUID, uuid, "extension uuid")
+        final = os.path.join(SYSTEM_EXT_DIR, uuid)
+        print(f"+ rm -r {final}", flush=True)
+        if self.simulate:
+            return 0
+        shutil.rmtree(final, ignore_errors=True)
+        self.gdm_extension(uuid, False)
+        return 0
+
+    def gdm_extension(self, uuid, on):
+        """Keep App Hub's list of login-screen extensions in GDM's dconf profile."""
+        current = []
+        try:
+            with open(GDM_DCONF) as f:
+                for line in f:
+                    if line.startswith("enabled-extensions="):
+                        current = list(ast.literal_eval(line.split("=", 1)[1].strip()))
+        except (OSError, ValueError, SyntaxError):
+            pass
+        wanted = sorted(set(current) | {uuid}) if on else [u for u in current if u != uuid]
+        if wanted == current:
+            return
+        if wanted:
+            with open(GDM_DCONF, "w") as f:
+                f.write("# Written by App Hub: GNOME Shell extensions on the login screen\n"
+                        "[org/gnome/shell]\n"
+                        "enabled-extensions=[" + ", ".join(repr(u) for u in wanted) + "]\n")
+            os.chmod(GDM_DCONF, 0o644)
+        elif os.path.exists(GDM_DCONF):
+            os.unlink(GDM_DCONF)
+        if os.access(GDM_GENERATE, os.X_OK):
+            subprocess.call([GDM_GENERATE], env=ENV, stdin=subprocess.DEVNULL)
+
+    def stage(self, pkg, path):
+        if not isinstance(path, str) or not path.endswith(".deb") or not os.path.isfile(path):
+            die(f"not a .deb file: {path!r}")
+        self.tempdir()
         # Copy first, then check the copy, so the file cannot change after the check.
         dest = os.path.join(self.workdir, f"{len(os.listdir(self.workdir))}.deb")
         with open(path, "rb") as src, open(dest, "xb") as out:
@@ -184,6 +283,12 @@ class Runner:
             if data == "delete-data":
                 cmd.append("--delete-data")
             return self.flatpak(cmd + [check(REF, ref, "ref")], ref, False)
+        if op == "install-extension":
+            uuid, path, gdm = args
+            return self.install_extension(uuid, path, gdm)
+        if op == "remove-extension":
+            (uuid,) = args
+            return self.remove_extension(uuid)
         if op == "flatpak-unused":
             return self.flatpak(["flatpak", "uninstall", "--system", "--unused", "-y", "--noninteractive"])
         die(f"unknown step: {op!r}")

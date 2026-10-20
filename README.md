@@ -24,7 +24,7 @@ Flatpak and AppImage, with a single password prompt for everything.
 
 | | |
 |---|---|
-| **My Apps** | Installs and updates apps straight from their latest GitHub release. **Add App** adds your own: paste a repo link, or your account link to list every project that publishes a `.deb`. |
+| **My Apps** | Installs and updates apps straight from their latest GitHub release, plus GNOME Shell extensions in its **Extensions** group. **Add App** (admin only) adds more: paste a repo link, or an account link to list every project that publishes a `.deb`. |
 | **Updates** | Checks GitHub, Deb, Snap, Flatpak and system packages, and lists every pending update with old → new version and release notes. Update one app, or everything at once. The tab shows how many updates are waiting. |
 | **Library** | Any GitHub project with `.deb` releases, grouped by owner. Starts with 13 creative apps from [storytold](https://github.com/storytold) (PhotoCraft, VectorCraft, FilmCraft, …). Add more by link, by account, or by name with AI. |
 | **All Apps** | Every installed desktop app with its channel (Deb, Snap, Flatpak, AppImage). Update, open, star or uninstall each one. **Recently Uninstalled** brings back anything removed in the last 60 days, by any tool. |
@@ -83,12 +83,27 @@ From then on, App Hub updates itself from its own row at the top of My Apps.
 | Astra Player | Video and music player with every codec built in | [Hafij-DEU/video-player](https://github.com/Hafij-DEU/video-player) |
 | Toggle Internal Keyboard | Turn the laptop keyboard on/off; auto-fix stuck Shift | [Hafij-DEU/laptop-keyboard-toggle](https://github.com/Hafij-DEU/laptop-keyboard-toggle) |
 
+### Extensions in My Apps
+
+GNOME Shell extensions, installed from the `.zip` on each latest release. Log out and back
+in after installing or updating one.
+
+| Extension | What it is | Installed | Repository |
+|---|---|---|---|
+| Fusion Desk | Taskbar, start menu and widgets in one panel | For your user, no password | [Hafij-DEU/Fusion-desk-gnome-extension](https://github.com/Hafij-DEU/Fusion-desk-gnome-extension) |
+| Sign-In Button | Clickable sign-in arrow on the login and lock screens | System-wide and on the login screen (asks for your password) | [Hafij-DEU/gnome-signin-button](https://github.com/Hafij-DEU/gnome-signin-button) |
+
 ## Setup tips
 
 **GitHub sign-in (recommended).** Without it, GitHub allows only 60 update checks per hour per
 network. App Hub uses your GitHub CLI login (`gh auth login`) automatically, or a token saved in
 **Menu ▸ Preferences** (it needs no permissions); either raises the limit to 5000. When GitHub
 can't be reached, App Hub shows its last answer and says so.
+
+**Add App in My Apps (admin).** The **Add App** button in My Apps appears only after the admin
+PIN is entered in **Menu ▸ Preferences ▸ Admin**; **Lock** hides it again. The Library's own
+Add App is open to everyone. The maintainer sets the PIN with `./set-admin-pin.py`; only a
+salted hash is stored.
 
 **AI Install.** Add a free Gemini API key in **Menu ▸ Preferences**
 ([get one here](https://aistudio.google.com/apikey)), or set `GEMINI_API_KEY`.
@@ -110,7 +125,7 @@ Everything in the window also works from a terminal:
 | `app-hub update-all --dry-run [--json]` | List pending app and system updates; install nothing |
 | `app-hub apps [--channel snap] [--no-updates]` | Every installed app with channel and updates |
 | `app-hub recent` | Recently uninstalled apps |
-| `app-hub add [--mine] owner/repo` | Add a GitHub project to the Library (or to My Apps) |
+| `app-hub add [--mine] owner/repo` | Add a GitHub project to the Library (or to My Apps; asks for the admin PIN) |
 | `app-hub install-deb FILE.deb` | Install a local `.deb` with its dependencies |
 | `app-hub ai "pdf editor"` | Ask Gemini; every suggestion is verified |
 | `app-hub favorites` | List favorite apps |

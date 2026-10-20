@@ -93,7 +93,7 @@ def _install(apps):
     staged = []
     for app in apps:
         if not app.installable:
-            print(f"{app.name}: {app.error or 'no .deb for this system'}", file=sys.stderr)
+            print(f"{app.name}: {app.error or app.status_text()}", file=sys.stderr)
             continue
         print(f"Downloading {app.release.asset_name}")
         path = core.download(app, lambda d, t, n=app.id: _bar(d, t, n))
@@ -102,13 +102,9 @@ def _install(apps):
         staged.append((app, path))
     if not staged:
         return 1
-    rc, _ = core.run_helper(core.install_plan([(a.package, p) for a, p in staged]), print)
+    rc, _ = core.install_staged(staged, print)
     if rc in core.AUTH_CANCELLED:
         print("Authentication cancelled.", file=sys.stderr)
-        return rc
-    if rc == 0:
-        for app, _ in staged:
-            core.clear_cache(app)
     return rc
 
 
@@ -142,7 +138,12 @@ def cmd_remove(args):
             print(f"{a.name} is not installed.")
     if not todo:
         return 0
-    rc, _ = core.run_helper([["apt-remove", *[a.installed_as or a.package for a in todo]]], print)
+    rc = 0
+    for app in [a for a in todo if a.extension]:
+        rc = core.uninstall_extension(app, print)[0] or rc
+    debs = [a.installed_as or a.package for a in todo if not a.extension]
+    if debs:
+        rc = core.run_helper([["apt-remove", *debs]], print)[0] or rc
     if rc in core.AUTH_CANCELLED:
         print("Authentication cancelled.", file=sys.stderr)
     return rc
@@ -271,6 +272,12 @@ def cmd_update_all(args):
 
 def cmd_add(args):
     from . import library
+    if args.mine and not core.is_admin():
+        import getpass
+        if not sys.stdin.isatty():
+            raise core.HubError("adding to My Apps needs the admin PIN; run this in a terminal")
+        if not core.check_admin_pin(getpass.getpass("Admin PIN: ")):
+            raise core.HubError("wrong PIN")
     owner, repo = library.parse_github(args.repo)
     if not (owner and repo):
         raise core.HubError("give a GitHub repository: owner/repo or https://github.com/owner/repo")
