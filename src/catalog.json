@@ -59,6 +59,14 @@
       "replaces": [
         "kiln-player"
       ]
+    },
+    {
+      "id": "toggle-internal-keyboard",
+      "name": "Toggle Internal Keyboard",
+      "summary": "Turn the laptop keyboard on/off; auto-fix stuck Shift",
+      "repo": "Hafij-DEU/laptop-keyboard-toggle",
+      "package": "toggle-internal-keyboard",
+      "desktop": "io.github.hafij_bge.ToggleInternalKeyboard.desktop"
     }
   ]
 }
