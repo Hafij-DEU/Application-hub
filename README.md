@@ -101,11 +101,14 @@ network. App Hub uses your GitHub CLI login (`gh auth login`) automatically, or 
 **Menu ▸ Preferences** (it needs no permissions); either raises the limit to 5000. When GitHub
 can't be reached, App Hub shows its last answer and says so.
 
-**Add App in My Apps (admin).** The **Add App** button in My Apps appears only after the admin
-PIN is entered in **Menu ▸ Preferences ▸ Admin**; **Lock** hides it again. Admin mode also shows a **Downloads** section in My Apps: how often
-each release of every app and extension was downloaded from GitHub (your own installs
-included), also as `app-hub downloads`. The Library's own Add App is open to everyone. The maintainer sets the PIN with `./set-admin-pin.py`; only a
-salted hash is stored.
+**Admin mode.** Enter the admin PIN in **Menu ▸ Preferences ▸ Admin** to turn it on on this
+computer; **Lock** turns it off again. Admin mode shows:
+
+- **Add App** in My Apps, to add more apps there. The Library's own Add App is open to everyone.
+- **Downloads** in My Apps: how often each release of every app and extension was downloaded
+  from GitHub (your own installs included). The same counts come from `app-hub downloads`.
+
+The maintainer sets the PIN with `./set-admin-pin.py`; only a salted hash is stored.
 
 **AI Install.** Add a free Gemini API key in **Menu ▸ Preferences**
 ([get one here](https://aistudio.google.com/apikey)), or set `GEMINI_API_KEY`.
@@ -122,7 +125,7 @@ Everything in the window also works from a terminal:
 |---|---|
 | `app-hub` | Open the window (`--page updates\|my-apps\|library\|all-apps\|ai\|cleaner`) |
 | `app-hub list [--json]` | Your GitHub apps: installed vs latest |
-| `app-hub install markd` · `update [APP…]` · `remove extendo` | Manage GitHub apps |
+| `app-hub install markd` · `update [APP…]` · `remove extendo` | Manage GitHub apps and extensions (`install fusion-desk`) |
 | `app-hub update-all [--apps-only] [--include-phased] [-y]` | Update everything with one password |
 | `app-hub update-all --dry-run [--json]` | List pending app and system updates; install nothing |
 | `app-hub apps [--channel snap] [--no-updates]` | Every installed app with channel and updates |
@@ -137,9 +140,9 @@ Everything in the window also works from a terminal:
 
 **Root access.** Everything that needs root goes through `/usr/lib/app-hub/app-hub-helper`,
 started with `pkexec` under the polkit action `io.github.hafij_bge.AppHub.manage`. The helper
-takes a JSON list of steps (`install-deb`, `apt-upgrade`, `snap-refresh`, `flatpak-update`, …) and
-checks every package, snap, ref and channel name against a strict pattern, so nothing can be
-passed in as an option. `app-hub-helper --simulate PLAN` prints the commands and runs apt in
+takes a JSON list of steps (`install-deb`, `apt-upgrade`, `snap-refresh`, `flatpak-update`,
+`install-extension`, …) and checks every package, snap, ref, channel and extension name against a
+strict pattern, so nothing can be passed in as an option. `app-hub-helper --simulate PLAN` prints the commands and runs apt in
 simulate mode.
 
 **GitHub releases.** App Hub picks the `.deb` asset that fits this machine (architecture first,
@@ -149,14 +152,22 @@ GitHub's digest or a `SHA256SUMS` file. To add a project, it reads the package n
 no `.deb` for this system, it offers the newest one that does. Answers are cached with ETags, so
 unchanged checks don't count against the rate limit.
 
+**GNOME Shell extensions.** Extensions come from the `.zip` on their latest release. App Hub checks
+that the zip holds the expected extension before installing it. A personal extension is installed
+with `gnome-extensions install` (no password); a system one goes to
+`/usr/share/gnome-shell/extensions` through the helper, which also lists it in
+`/usr/share/gdm/dconf/95-app-hub-extensions` when it belongs on the login screen. Either way App
+Hub turns it on in your `enabled-extensions` setting; it loads at your next login.
+
 **Your files.**
 
 | Path | Contents |
 |---|---|
-| `~/.config/app-hub/settings.json` | Gemini key and model, GitHub token (readable only by you) |
+| `~/.config/app-hub/settings.json` | Gemini key and model, GitHub token, admin mode (readable only by you) |
 | `~/.config/app-hub/library.json` | Apps you added, and default Library apps you removed |
 | `~/.local/share/app-hub/` | Favorites, uninstall history, Library icons |
 | `~/.cache/app-hub/` | GitHub answers and downloaded releases |
+| `~/.local/share/gnome-shell/extensions/` | Extensions installed for your user |
 
 ## Build from source
 
@@ -168,8 +179,9 @@ cd Application-hub
 
 The app is plain Python in `src/app_hub/`: `gui.py` is the window, `cli.py` the terminal front
 end, `core.py` the GitHub and dpkg logic, and `inventory.py` lists apps across channels.
-`src/app-hub-helper` is the root helper, `src/catalog.json` lists the My Apps entries and
-`src/library-default.json` the default Library.
+`src/app-hub-helper` is the root helper, `src/catalog.json` lists the My Apps apps and extensions
+(and the admin PIN hash), and `src/library-default.json` the default Library. `./set-admin-pin.py`
+changes the admin PIN.
 
 ## Credits
 
