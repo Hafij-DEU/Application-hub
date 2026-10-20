@@ -8,7 +8,6 @@
 Flatpak and AppImage, with a single password prompt for everything.
 
 [![Latest release](https://img.shields.io/github/v/release/Hafij-DEU/Application-hub?label=release&color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/Hafij-DEU/Application-hub/total?color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases)
 ![Ubuntu 24.04+ · Debian 13](https://img.shields.io/badge/Ubuntu_24.04+_·_Debian_13-E95420?logo=ubuntu&logoColor=white)
 ![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)
