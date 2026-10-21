@@ -58,6 +58,7 @@ class Release:
     published: str = ""      # ISO date
     stale: float = 0         # nonzero: GitHub could not be asked; cached answer (time, or -1 = unknown)
     skipped: str = ""        # newer tag without a .deb for this system
+    extras: list = field(default_factory=list)   # browser-extension zips: [{folder, name, url, size, sha256}]
 
 
 @dataclass
@@ -79,6 +80,9 @@ class App:
     extension: str = ""                            # GNOME Shell extension UUID (installed from a release .zip)
     system: bool = False                           # extension goes to /usr/share (needs root), not ~/.local
     gdm: bool = False                              # system extension is also turned on for the login screen
+    browser_extensions: list = field(default_factory=list)
+    # [{"pattern": regex, "folder": "Name/chrome"}]: release .zip files unpacked into Documents
+    # with the app (and refreshed when a newer one is released), e.g. Draco's browser extension
     release: Release | None = None
     error: str = ""
 
@@ -448,6 +452,14 @@ def fetch_release(app):
         digest = asset.get("digest") or ""
         if digest.startswith("sha256:"):
             rel.sha256 = digest[7:]
+    for spec in app.browser_extensions:
+        extra = next((a for a in assets if a["name"].lower().endswith(".zip")
+                      and re.search(spec.get("pattern", r"\.zip$"), a["name"])), None)
+        if extra:
+            digest = extra.get("digest") or ""
+            rel.extras.append({"folder": spec["folder"], "name": extra["name"],
+                               "url": extra["browser_download_url"], "size": extra.get("size", 0),
+                               "sha256": digest[7:] if digest.startswith("sha256:") else ""})
     sums = next((a for a in assets if a["name"].upper().startswith("SHA256SUMS")), None)
     if sums:
         rel.sums_url = sums["browser_download_url"]
@@ -482,6 +494,8 @@ def check_all(apps, on_done=None):
             app.release, app.error = fetch_release(app), ""
         except HubError as e:
             app.release, app.error = None, str(e)
+        if app.release and app.release.extras and app.installed and not app.update_available:
+            sync_browser_extensions(app)        # app up to date, extension copy behind: refresh it
         if on_done:
             on_done(app)
     with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
@@ -576,12 +590,94 @@ def clear_cache(app):
 
 
 def finish_install(app, log=None):
-    """After a successful install: drop the download; turn extensions on for this user."""
+    """After a successful install: drop the download; turn extensions on for this user; put the
+    app's browser extension (if it has one) in Documents."""
     clear_cache(app)
     if app.extension:
         for note in enable_extension(app.extension):
             if log:
                 log(f"{app.name}: {note}")
+    sync_browser_extensions(app, log, force=True)
+
+
+# --- browser extensions shipped as release .zip files ----------------------
+
+def documents_dir():
+    try:
+        out = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    home = os.path.expanduser("~")
+    if not out or os.path.normpath(out) == os.path.normpath(home):    # "$HOME/" means not set
+        return os.path.join(home, "Documents")
+    return out
+
+
+def browser_extension_dir(folder):
+    return os.path.join(documents_dir(), folder)
+
+
+def _browser_extension_version(path):
+    try:
+        with open(os.path.join(path, "manifest.json"), encoding="utf-8") as f:
+            return str(json.load(f).get("version", ""))
+    except (OSError, ValueError):
+        return ""
+
+
+def browser_extensions_outdated(app):
+    """Browser-extension folders that are missing or older than the latest release."""
+    rel = app.release
+    if not (app.installed and rel and rel.extras):
+        return []
+    return [x for x in rel.extras
+            if is_newer(rel.version, _browser_extension_version(browser_extension_dir(x["folder"])) or "0")]
+
+
+def sync_browser_extensions(app, log=None, force=False):
+    """Download the release's browser-extension zips and unpack them into Documents
+    (replacing an older copy). Without force only missing or outdated copies are fetched."""
+    rel = app.release
+    if not rel or not rel.extras or not (app.installed or force):
+        return []
+    todo = rel.extras if force else browser_extensions_outdated(app)
+    done = []
+    for x in todo:
+        target = browser_extension_dir(x["folder"])
+        try:
+            folder = os.path.join(CACHE_DIR, app.id)
+            os.makedirs(folder, exist_ok=True)
+            path = os.path.join(folder, x["name"])
+            with urllib.request.urlopen(_request(x["url"], "application/octet-stream"), timeout=30) as resp:
+                data = resp.read()
+            if x.get("sha256") and hashlib.sha256(data).hexdigest() != x["sha256"]:
+                raise HubError(f"{x['name']}: checksum mismatch")
+            with open(path, "wb") as f:
+                f.write(data)
+            import zipfile
+            tmp = target + ".app-hub-new"
+            shutil.rmtree(tmp, ignore_errors=True)
+            with zipfile.ZipFile(path) as z:
+                for name in z.namelist():                     # refuse paths leaving the folder
+                    dest = os.path.normpath(os.path.join(tmp, name))
+                    if not dest.startswith(os.path.normpath(tmp) + os.sep):
+                        raise HubError(f"{x['name']}: unsafe path {name}")
+                z.extractall(tmp)
+            if not os.path.exists(os.path.join(tmp, "manifest.json")):
+                raise HubError(f"{x['name']}: not a browser extension (no manifest.json)")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.rmtree(target, ignore_errors=True)
+            os.replace(tmp, target)
+            _unlink(path)
+            done.append(target)
+            if log:
+                log(f"{app.name}: browser extension {rel.version} → {target} "
+                    "(click Reload on its card in the browser's extensions page)")
+        except (HubError, OSError, urllib.error.URLError, ValueError) as e:
+            if log:
+                log(f"{app.name}: browser extension not updated ({getattr(e, 'reason', e)})")
+    return done
 
 
 # --- GNOME Shell extensions -----------------------------------------------

@@ -36,7 +36,17 @@
       "summary": "Fast multi-connection download manager",
       "repo": "Hafij-BGE/draco-dm",
       "package": "draco-dm",
-      "desktop": "io.github.draco.DracoDM.desktop"
+      "desktop": "io.github.draco.DracoDM.desktop",
+      "browser_extensions": [
+        {
+          "pattern": "draco-extension-chromium-.*\\.zip",
+          "folder": "Draco Browser Extension/chrome"
+        },
+        {
+          "pattern": "draco-extension-firefox-.*\\.zip",
+          "folder": "Draco Browser Extension/firefox"
+        }
+      ]
     },
     {
       "id": "docscan",
