@@ -635,6 +635,37 @@ def browser_extensions_outdated(app):
             if is_newer(rel.version, _browser_extension_version(browser_extension_dir(x["folder"])) or "0")]
 
 
+def browser_extension_root(app):
+    """Documents folder that holds the app's unpacked browser extensions (e.g. "Draco Browser Extension")."""
+    tops = {x["folder"].split("/")[0] for x in app.browser_extensions}
+    return browser_extension_dir(tops.pop()) if len(tops) == 1 else documents_dir()
+
+
+def save_browser_extension_zips(app, dest=None, log=None):
+    """Save the release's browser-extension .zip files into Downloads; returns their paths."""
+    rel = app.release
+    if not rel or not rel.extras:
+        raise HubError(f"{app.name}: this release has no browser-extension .zip")
+    dest = dest or os.path.join(os.path.expanduser("~"), "Downloads")
+    os.makedirs(dest, exist_ok=True)
+    out = []
+    for x in rel.extras:
+        try:
+            with urllib.request.urlopen(_request(x["url"], "application/octet-stream"), timeout=30) as resp:
+                data = resp.read()
+        except (urllib.error.URLError, OSError) as e:
+            raise HubError(f"{x['name']}: download failed ({getattr(e, 'reason', e)})") from None
+        if x.get("sha256") and hashlib.sha256(data).hexdigest() != x["sha256"]:
+            raise HubError(f"{x['name']}: checksum mismatch, not saved")
+        path = os.path.join(dest, x["name"])
+        with open(path, "wb") as f:
+            f.write(data)
+        out.append(path)
+        if log:
+            log(f"{app.name}: saved {path}")
+    return out
+
+
 def sync_browser_extensions(app, log=None, force=False):
     """Download the release's browser-extension zips and unpack them into Documents
     (replacing an older copy). Without force only missing or outdated copies are fetched."""

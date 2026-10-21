@@ -212,6 +212,10 @@ class HubCard(Gtk.FlowBoxChild):
             menu.append(btn)
             return btn
         item("Release page", "web-browser-symbolic", self.on_web)
+        if app.browser_extensions:
+            item("Get Browser Extension", "application-x-addon-symbolic", self.on_get_extension)
+            item("Open Extension Folder", "folder-symbolic", self.on_open_extension)
+            item("Save Extension .zip to Downloads", "folder-download-symbolic", self.on_save_extension_zip)
         self.remove_item = item("Uninstall", "user-trash-symbolic", lambda: section.uninstall(self.app), True)
         if section.removable or app.section == "mine":
             where = "My Apps" if app.section == "mine" else "Library"
@@ -228,7 +232,10 @@ class HubCard(Gtk.FlowBoxChild):
         buttons = Gtk.Box(spacing=6, homogeneous=not wide, valign=Gtk.Align.CENTER)
         self.open_btn = text_button("Open", lambda: win.open_hub(self.app))
         self.main_btn = text_button("", self.on_main)
-        for b in (self.open_btn, self.main_btn):
+        self.ext_btn = text_button("Extension", self.on_get_extension)
+        self.ext_btn.set_tooltip_text("Download the newest browser extension into Documents and open its folder")
+        self.ext_btn.set_visible(bool(app.browser_extensions))
+        for b in (self.open_btn, self.ext_btn, self.main_btn):
             buttons.append(b)
 
         if wide:   # banner: icon · name/summary · chip · buttons · menu, in one line
@@ -284,6 +291,8 @@ class HubCard(Gtk.FlowBoxChild):
         downloading = self.cancel is not None
         self.chip.set_visible(not downloading)
         self.open_btn.set_visible(bool(app.installed) and not downloading)
+        self.ext_btn.set_visible(bool(app.browser_extensions) and not downloading)
+        self.ext_btn.set_sensitive(not busy)
         # App Hub cannot uninstall itself while running (use apt remove app-hub).
         self.remove_item.set_visible(bool(app.installed) and app.package != "app-hub")
         self.remove_item.set_sensitive(not busy and not downloading)
@@ -305,6 +314,39 @@ class HubCard(Gtk.FlowBoxChild):
             self.cancel.set()
         else:
             self.section.install([self.app])
+
+    def _ensure_release(self):
+        if self.app.release is None or not self.app.release.extras:
+            self.app.release = core.fetch_release(self.app)
+
+    def on_get_extension(self):
+        app, win = self.app, self.section.win
+
+        def work(log):
+            self._ensure_release()
+            done = core.sync_browser_extensions(app, log, force=True)
+            if not done:
+                return 1, "No browser extension in this release"
+            _idle(self.on_open_extension)
+            return 0, ""
+        win.run_job(f"Get the {app.name} browser extension", work)
+
+    def on_open_extension(self):
+        path = core.browser_extension_root(self.app)
+        if not os.path.isdir(path):
+            return self.on_get_extension()
+        Gtk.FileLauncher.new(Gio.File.new_for_path(path)).launch(self.section.win, None, None, None)
+
+    def on_save_extension_zip(self):
+        app, win = self.app, self.section.win
+
+        def work(log):
+            self._ensure_release()
+            paths = core.save_browser_extension_zips(app, log=log)
+            _idle(lambda: Gtk.FileLauncher.new(Gio.File.new_for_path(paths[0])).open_containing_folder(
+                win, None, None, None))
+            return 0, ""
+        win.run_job(f"Save the {app.name} extension .zip", work)
 
     def on_web(self):
         url = self.app.release.url if self.app.release else self.app.repo_url
