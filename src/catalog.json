@@ -84,6 +84,14 @@
       "desktop": "io.github.hafij_bge.ToggleInternalKeyboard.desktop"
     },
     {
+      "id": "meshdrop",
+      "name": "MeshDrop",
+      "summary": "Send files between your PC and phones, on Wi-Fi or through your own hub",
+      "repo": "Hafij-DEU/multidevice-sharing",
+      "package": "meshdrop",
+      "desktop": "meshdrop.desktop"
+    },
+    {
       "id": "fusion-desk",
       "name": "Fusion Desk",
       "summary": "Taskbar, start menu and widgets in one panel",
