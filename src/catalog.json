@@ -89,7 +89,13 @@
       "summary": "Send files between your PC and phones, on Wi-Fi or through your own hub",
       "repo": "Hafij-DEU/multidevice-sharing",
       "package": "meshdrop",
-      "desktop": "meshdrop.desktop"
+      "desktop": "meshdrop.desktop",
+      "browser_extensions": [
+        {
+          "pattern": "meshdrop-extension-.*\\.zip",
+          "folder": "MeshDrop Browser Extension"
+        }
+      ]
     },
     {
       "id": "fusion-desk",
