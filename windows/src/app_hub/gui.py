@@ -651,7 +651,7 @@ class HomePage:
     def __init__(self, win):
         self.win = win
         catalog = core.load_catalog(include_library=False)
-        self.self_hub = HubSection(win, "App Hub", "This app · github.com/Hafij-DEU/Application-hub",
+        self.self_hub = HubSection(win, "App Hub", "This app · github.com/Hafij-DEU/Application-hub-windows",
                                    [a for a in catalog if a.section == "self"], wide=True)
         add_btn = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Add your own app from GitHub")
         add_btn.set_child(Adw.ButtonContent(icon_name="list-add-symbolic", label="Add App"))
@@ -1674,6 +1674,10 @@ class UpdateRow(Adw.ExpanderRow):
         p = pending
         super().__init__(title=GLib.markup_escape_text(p.label))
         self.page, self.pending = page, p
+        self.check = Gtk.CheckButton(active=p.key not in page.unchecked, valign=Gtk.Align.CENTER,
+                                     tooltip_text="Include in Update Selected")
+        self.check.connect("toggled", lambda b: page.toggle(p.key, b.get_active()))
+        self.add_prefix(self.check)
         when = ""
         if p.kind == "hub" and p.obj.release and p.obj.release.published:
             when = " · released " + p.obj.release.published[:10]
@@ -1781,8 +1785,14 @@ class UpdatesPage:
 
         self.apps_group = Adw.PreferencesGroup(
             title="App Updates", description="Click an app to see what's new")
-        self.update_all_btn = text_button("Update All", win.confirm_update_everything, "suggested-action")
-        self.apps_group.set_header_suffix(self.update_all_btn)
+        self.unchecked = set()      # updates the user unticked (kept across rebuilds)
+        self.update_all_btn = text_button("Update All", self.update_clicked, "suggested-action")
+        self.select_btn = text_button("Select None", lambda: self.select_all(self.select_btn.get_label() == "Select All"))
+        self.select_btn.add_css_class("flat")
+        head = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        head.append(self.select_btn)
+        head.append(self.update_all_btn)
+        self.apps_group.set_header_suffix(head)
         self.sys_group = Adw.PreferencesGroup(
             title="System Updates", description="Runtimes and other packages winget can update")
         self.wu_group = Adw.PreferencesGroup(title="Windows")
@@ -1904,8 +1914,7 @@ class UpdatesPage:
             row.sync()
         for _row, btn in self.sys_rows:
             btn.set_sensitive(not win.busy)
-        self.update_all_btn.set_sensitive(not win.busy)
-        self.update_all_btn.set_visible(len(pending) + len(self.sys_rows) > 1)
+        self.sync_selection()
         self.empty.set_visible(not checking and not pending and not sysup)
         self.apps_group.set_visible(bool(pending))
         self.sys_group.set_visible(bool(sysup))
@@ -1930,6 +1939,10 @@ class UpdatesPage:
             app = inventory.SysApp("desktop", r["id"], r["name"], version=r["version"], update=r["available"],
                                    winget_id=r["id"], winget_source=r["source"], scope="machine")
             p = updates.Pending(r["name"], "winget", r["version"], r["available"], app)
+            row.pending = p
+            row.check = Gtk.CheckButton(active=p.key not in self.unchecked, valign=Gtk.Align.CENTER)
+            row.check.connect("toggled", lambda b, k=p.key: self.toggle(k, b.get_active()))
+            row.add_prefix(row.check)
             btn = text_button("Update", lambda p=p: self.win.update_pending([p]), "suggested-action")
             box.append(btn)
             row.add_suffix(box)
@@ -1937,6 +1950,39 @@ class UpdatesPage:
             self.sys_group.add(row)
         self.sys_group.set_title(f"System Updates ({len(sysup)})")
         self.show_ignored()
+
+    # --- picking which updates to install ---
+
+    def toggle(self, key, on):
+        (self.unchecked.discard if on else self.unchecked.add)(key)
+        self.sync_selection()
+
+    def selected_pending(self):
+        return ([r.pending for r in self.rows if r.check.get_active()]
+                + [row.pending for row, _ in self.sys_rows if row.check.get_active()])
+
+    def select_all(self, on):
+        for r in self.rows:
+            r.check.set_active(on)
+        for row, _ in self.sys_rows:
+            row.check.set_active(on)
+
+    def sync_selection(self):
+        total = len(self.rows) + len(self.sys_rows)
+        chosen = len(self.selected_pending())
+        self.update_all_btn.set_label("Update All" if chosen == total else f"Update Selected ({chosen})")
+        self.update_all_btn.set_sensitive(bool(chosen) and not self.win.busy)
+        self.update_all_btn.set_visible(total > 1)
+        self.select_btn.set_label("Select None" if chosen == total else "Select All")
+        self.select_btn.set_visible(total > 1)
+
+    def update_clicked(self):
+        total = len(self.rows) + len(self.sys_rows)
+        chosen = self.selected_pending()
+        if len(chosen) == total:
+            self.win.confirm_update_everything()
+        elif chosen:
+            self.win.update_pending(chosen)
 
     def row_for(self, app):
         """The row of an app. Matched by the app's identity, not the object: All Apps reloads
@@ -3414,7 +3460,7 @@ class Application(Adw.Application):
     def on_about(self, *_):
         Adw.AboutDialog(
             application_name="App Hub", application_icon="", version=__version__,
-            developer_name="Md Hafijur Rahman", website="https://github.com/Hafij-DEU/Application-hub",
+            developer_name="Md Hafijur Rahman", website="https://github.com/Hafij-DEU/Application-hub-windows",
             comments="Install, update and uninstall apps on Windows: GitHub releases, winget and the "
                      "Microsoft Store, find install methods with AI and clean up leftovers.",
             debug_info=f"{winsys.windows_version()} · {winsys.machine_arch()}",

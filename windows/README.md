@@ -8,13 +8,13 @@
 and the Microsoft Store, with an IObit-style uninstaller and a single administrator prompt for everything.
 
 ![Windows 11](https://img.shields.io/badge/Windows_11-0078D4?logo=windows11&logoColor=white)
-![Version 1.0.3](https://img.shields.io/badge/version-1.0.3-3584e4)
+![Version 1.0.5](https://img.shields.io/badge/version-1.0.5-3584e4)
 ![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white)
 
-[![Download AppHubSetup-1.0.3.exe](https://img.shields.io/badge/Download-AppHubSetup--1.0.3.exe-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Hafij-DEU/Application-hub/releases/download/windows-v1.0.3/AppHubSetup-1.0.3.exe)
+[![Download AppHubSetup-1.0.5.exe](https://img.shields.io/badge/Download-AppHubSetup--1.0.5.exe-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Hafij-DEU/Application-hub-windows/releases/download/v1.0.5/AppHubSetup-1.0.5.exe)
 
-[Release notes](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.3) ·
+[Release notes](https://github.com/Hafij-DEU/Application-hub-windows/releases/latest) ·
 [Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
 
 <img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
@@ -56,7 +56,7 @@ And more:
 ## Install
 
 Download `AppHubSetup-<version>.exe` from the
-[Windows release](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.3) and run it.
+[latest release](https://github.com/Hafij-DEU/Application-hub-windows/releases/latest) and run it.
 SmartScreen may warn because the app isn't code-signed: **More info → Run anyway**.
 The installer asks for administrator permission once and installs App Hub for all users. From then
 on, App Hub updates itself from its own card at the top of My Apps.
@@ -133,13 +133,12 @@ Needs [MSYS2](https://www.msys2.org) and [Inno Setup 6](https://jrsoftware.org)
 (`winget install MSYS2.MSYS2 JRSoftware.InnoSetup`). Then, in PowerShell:
 
 ```powershell
-git clone https://github.com/Hafij-DEU/Application-hub.git
-cd Application-hub\windows
+git clone https://github.com/Hafij-DEU/Application-hub-windows.git
+cd Application-hub-windows
 powershell -ExecutionPolicy Bypass -File packaging\windows\build.ps1   # dist\AppHubSetup-<version>.exe
 ```
 
-Windows releases are tagged `windows-v<version>` and carry `AppHubSetup-<version>.exe`; App Hub finds its
-own updates by that file name, next to the Linux `.deb` releases of this repository.
+Releases are tagged `v<version>` and carry `AppHubSetup-<version>.exe`; App Hub finds its own updates by that file name.
 
 To run it from source: `C:\msys64\ucrt64\bin\pythonw.exe bin\app-hub.pyw` (with `C:\msys64\ucrt64\bin`
 on `PATH`). The app is plain Python in `src/app_hub/`: `gui.py` is the window, `cli.py` the terminal

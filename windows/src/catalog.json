@@ -9,7 +9,7 @@
       "id": "app-hub",
       "name": "App Hub",
       "summary": "This app: install, update and uninstall apps",
-      "repo": "Hafij-DEU/Application-hub",
+      "repo": "Hafij-DEU/Application-hub-windows",
       "asset_pattern": "(?i)^AppHubSetup-.*\\.exe$",
       "version_from": "asset",
       "match": "^App Hub( version|\\s*$)",
