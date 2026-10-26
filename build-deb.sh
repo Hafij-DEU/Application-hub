@@ -20,6 +20,8 @@ install -Dm644 data/io.github.hafij_bge.AppHub.desktop "$ROOT/usr/share/applicat
 install -Dm644 data/io.github.hafij_bge.AppHub.svg "$ROOT/usr/share/icons/hicolor/scalable/apps/io.github.hafij_bge.AppHub.svg"
 install -Dm644 data/io.github.hafij_bge.AppHub.policy "$ROOT/usr/share/polkit-1/actions/io.github.hafij_bge.AppHub.policy"
 install -Dm644 README.md "$ROOT/usr/share/doc/app-hub/README.md"
+install -Dm644 LICENSE "$ROOT/usr/share/doc/app-hub/copyright"
+install -Dm644 THIRD_PARTY_NOTICES.md "$ROOT/usr/share/doc/app-hub/THIRD_PARTY_NOTICES.md"
 
 SIZE=$(du -sk --exclude=DEBIAN "$ROOT" | cut -f1)
 sed -e "s/@VERSION@/$VERSION/" -e "s/@SIZE@/$SIZE/" debian/control > "$ROOT/DEBIAN/control"

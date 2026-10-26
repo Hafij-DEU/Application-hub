@@ -2148,14 +2148,24 @@ class Application(Adw.Application):
                 break
 
     def on_about(self, *_):
-        Adw.AboutDialog(
+        about = Adw.AboutDialog(
             application_name="App Hub", application_icon=APP_ID, version=__version__,
             developer_name="Md. Hafijur Rahman", website="https://github.com/Hafij-DEU/Application-hub",
             comments="Install, update and uninstall apps from any channel, find install methods "
                      "with AI and clean up leftovers.\n\nDeveloped by Md. Hafijur Rahman.\n"
                      "GitHub: https://github.com/Hafij-DEU/Application-hub\n\n"
                      "This app was generated with AI. Developer support may not be available.",
-        ).present(self.get_active_window())
+            license_type=Gtk.License.GPL_3_0,
+        )
+        about.add_legal_section(
+            "Third-party software",
+            None,
+            Gtk.License.CUSTOM,
+            "PyGObject, GTK 4, libadwaita and polkit (LGPL-2.1+); python-apt, dpkg and apt (GPL-2.0+). "
+            "Library app icons from storytold repositories (Apache-2.0). "
+            "Full list: THIRD_PARTY_NOTICES.md in the GitHub repository.",
+        )
+        about.present(self.get_active_window())
 
 
 def run(argv=None, page=None):
