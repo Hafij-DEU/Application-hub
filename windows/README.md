@@ -5,12 +5,14 @@
 # App Hub for Windows
 
 **One window to install, update and remove every app on Windows 11:** GitHub releases, winget
-and the Microsoft Store, with a single administrator prompt for everything.
+and the Microsoft Store, with an IObit-style uninstaller and a single administrator prompt for everything.
 
 ![Windows 11](https://img.shields.io/badge/Windows_11-0078D4?logo=windows11&logoColor=white)
+![Version 1.0.0](https://img.shields.io/badge/version-1.0.0-3584e4)
 ![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white)
 
+[**Download**](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.0) ·
 [Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
 
 <img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
@@ -52,7 +54,7 @@ And more:
 ## Install
 
 Download `AppHubSetup-<version>.exe` from the
-[latest release](https://github.com/Hafij-DEU/Application-hub/releases/latest) and run it.
+[Windows release](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.0) and run it.
 SmartScreen may warn because the app isn't code-signed: **More info → Run anyway**.
 The installer asks for administrator permission once and installs App Hub for all users. From then
 on, App Hub updates itself from its own card at the top of My Apps.
