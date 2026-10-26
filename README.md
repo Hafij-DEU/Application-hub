@@ -13,7 +13,8 @@ Flatpak and AppImage, with a single password prompt for everything.
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)
 
 [**Download**](https://github.com/Hafij-DEU/Application-hub/releases/latest) ·
-[Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
+[Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works) ·
+[**Windows 11 version**](windows/)
 
 <img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
 
