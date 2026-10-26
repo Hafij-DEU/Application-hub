@@ -2150,9 +2150,11 @@ class Application(Adw.Application):
     def on_about(self, *_):
         Adw.AboutDialog(
             application_name="App Hub", application_icon=APP_ID, version=__version__,
-            developer_name="Md Hafijur Rahman", website="https://github.com/Hafij-DEU/Application-hub",
+            developer_name="Md. Hafijur Rahman", website="https://github.com/Hafij-DEU/Application-hub",
             comments="Install, update and uninstall apps from any channel, find install methods "
-                     "with AI and clean up leftovers.",
+                     "with AI and clean up leftovers.\n\nDeveloped by Md. Hafijur Rahman.\n"
+                     "GitHub: https://github.com/Hafij-DEU/Application-hub\n\n"
+                     "This app was generated with AI. Developer support may not be available.",
         ).present(self.get_active_window())
 
 
