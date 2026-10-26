@@ -30,7 +30,9 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 WizardStyle=modern
 MinVersion=10.0.17763
-CloseApplications=yes
+; App Hub is closed by PrepareToInstall below: GTK windows do not answer Restart Manager's request,
+; so Setup would give up (exit code 5) when App Hub is open.
+CloseApplications=no
 RestartApplications=no
 
 [Tasks]
@@ -53,6 +55,18 @@ Filename: "{app}\AppHub.exe"; Flags: nowait runasoriginaluser; Check: ShouldRela
 Type: filesandordirs; Name: "{app}\_internal"
 
 [Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  rc: Integer;
+begin
+  { Ask App Hub to close (like clicking its close button), then end it if it is still open. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM AppHub.exe', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Sleep(3000);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM AppHub.exe /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/IM app-hub.exe /F', '', SW_HIDE, ewWaitUntilTerminated, rc);
+  Result := '';
+end;
+
 function ShouldRelaunch: Boolean;
 var
   i: Integer;

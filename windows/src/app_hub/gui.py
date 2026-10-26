@@ -255,9 +255,11 @@ class HubCard(Gtk.FlowBoxChild):
         # Only apps with a Windows build are offered (an installed one stays, to open or remove it).
         no_windows = bool(app.error or (app.release and not app.release.asset_url))
         self.set_visible(is_self or bool(app.installed) or not no_windows)
-        self.chip.set_visible(not downloading)
-        self.open_btn.set_visible(bool(app.installed) and not downloading and not is_self)
-        self.ext_btn.set_visible(bool(app.browser_extensions) and not downloading)
+        installing = bool(getattr(self, "stage", ""))
+        self.chip.set_visible(not downloading and not installing)
+        self.open_btn.set_visible(bool(app.installed) and not downloading and not installing and not is_self)
+        has_extension = bool(app.browser_extensions) and (app.release is None or bool(app.release.extras))
+        self.ext_btn.set_visible(has_extension and not downloading and not installing)
         self.ext_btn.set_sensitive(not busy)
         # App Hub cannot uninstall itself while running (use Settings ▸ Apps).
         self.remove_item.set_visible(bool(app.entry) and not is_self)
@@ -268,7 +270,9 @@ class HubCard(Gtk.FlowBoxChild):
             self.main_btn.set_label("Cancel")
             self.main_btn.set_visible(True)
             self.main_btn.set_sensitive(True)
-        elif app.update_available or not app.installed:
+        elif installing:
+            self.main_btn.set_visible(False)
+        elif (app.update_available and not updates.app_ignored(app)) or not app.installed:
             self.main_btn.set_label("Update" if app.installed else "Install")
             self.main_btn.add_css_class("suggested-action")
             self.main_btn.set_visible(True)
@@ -329,6 +333,104 @@ class HubCard(Gtk.FlowBoxChild):
         else:
             self.progress.pulse()
 
+    def set_stage(self, text, percent=None):
+        _stage(self, text, percent)
+        self.sync()
+
+
+def _stage(row, text, percent=None):
+    """Show what happens to an app right now: a bar with text; it moves back and forth while the
+    amount is unknown, and fills up when `percent` is known (e.g. winget's download)."""
+    row.stage = text
+    if text and percent is not None:
+        if getattr(row, "pulse_id", 0):
+            GLib.source_remove(row.pulse_id)
+            row.pulse_id = 0
+        row.progress.set_visible(True)
+        row.progress.set_fraction(percent / 100)
+        row.progress.set_text(text)
+    elif text:
+        row.progress.set_visible(True)
+        row.progress.set_text(text)
+        row.progress.pulse()
+        if not getattr(row, "pulse_id", 0):
+            row.pulse_id = GLib.timeout_add(120, lambda: row.progress.pulse() or True)
+    else:
+        row.progress.set_visible(False)
+        if getattr(row, "pulse_id", 0):
+            GLib.source_remove(row.pulse_id)
+            row.pulse_id = 0
+
+
+def stage_logger(log, rows, overall=None):
+    """Wrap a job's log: lines from the install steps move each app's row through its stages
+    (rows: {app name: row with set_stage}); overall(text) hears "Updating 3 of 7: 7-Zip".
+    Returns (log function, clear function)."""
+    current = [None]          # the app the last named line was about (winget's own lines name none)
+    done, total = set(), len(rows)
+
+    def tell(name):
+        if overall and total > 1:
+            _idle(overall, f"Updating {min(len(done) + 1, total)} of {total}: {name}" if len(done) < total
+                  else f"Finishing {total} updates…")
+
+    def on_line(line):
+        if line.startswith("Done: "):
+            log(line)
+            name = line[len("Done: "):]
+            if name in rows:
+                done.add(name)
+                current[0] = None
+                _idle(rows[name].set_stage, "Done ✓", 100)
+                nxt = next((n for n in rows if n not in done), None)
+                if nxt:
+                    tell(nxt)
+            return
+        if line.startswith(("Installing ", "Asking Windows")) and total > 1 and not done and current[0] is None:
+            for name, row in rows.items():                   # everyone waits their turn
+                if not getattr(row, "stage", ""):
+                    _idle(row.set_stage, "Queued…")
+        if line.startswith("Progress: "):
+            for name, row in rows.items():
+                if line.startswith(f"Progress: {name} "):
+                    current[0] = row
+                    tail = line[len(f"Progress: {name} "):]
+                    percent = int(tail.split("%", 1)[0]) if tail.split("%", 1)[0].isdigit() else None
+                    detail = tail.split("·", 1)[1].strip() if "·" in tail else ""
+                    text = f"Downloading {percent}%" + (f" · {detail}" if detail and "/" in detail else "")
+                    _idle(row.set_stage, text, percent)
+            if line.endswith(("0%", "5%")) and " · " in line:
+                log(line)                                  # every 5% in the Activity Log is enough
+            return
+        log(line)
+        if line.startswith("Asking Windows for administrator permission"):
+            for name, row in rows.items():
+                if name not in done:
+                    _idle(row.set_stage, "Waiting for administrator permission…")
+            return
+        if current[0] is not None and line.startswith(("Successfully verified installer hash",
+                                                       "Starting package install", "Installing")):
+            _idle(current[0].set_stage, "Installing…")
+        for name, row in rows.items():
+            if name not in line or name in done:
+                continue
+            if current[0] is not row:
+                tell(name)
+            current[0] = row
+            if line.startswith("Closing "):
+                _idle(row.set_stage, "Closing the app…")
+            elif line.startswith(("Upgrade ", "Install ")) and "winget" in line:
+                _idle(row.set_stage, "Starting…")
+            elif line.startswith(("Installing ", "Unpacking ")):
+                _idle(row.set_stage, "Installing…")
+            elif "installed in" in line or "the installer stopped" in line:
+                _idle(row.set_stage, "")
+
+    def clear():
+        for row in rows.values():
+            _idle(row.set_stage, "")
+    return on_line, clear
+
 
 class HubSection:
     """A grid of GitHub-release app cards with Install / Update / Open / Uninstall."""
@@ -338,7 +440,7 @@ class HubSection:
         self.win, self.apps, self.removable, self.on_removed = win, [], removable, on_removed
         self.wide = wide
         self.update_all_btn = text_button("Update All", lambda: self.install(
-            [a for a in self.apps if a.update_available]), "suggested-action")
+            [a for a in self.apps if a.update_available and not updates.app_ignored(a)]), "suggested-action")
         self.update_all_btn.set_visible(False)
         self.update_all_btn.add_css_class("pill")
         header = Gtk.Box(spacing=6)
@@ -373,7 +475,7 @@ class HubSection:
     def sync(self):
         for row in self.rows.values():
             row.sync()
-        self.update_all_btn.set_visible(sum(a.update_available for a in self.apps) > 1)
+        self.update_all_btn.set_visible(sum(a.update_available and not updates.app_ignored(a) for a in self.apps) > 1)
         self.update_all_btn.set_sensitive(not self.win.busy)
         self.win.sync_update_everything()
 
@@ -399,12 +501,19 @@ class HubSection:
                     log(f"{app.name}: download cancelled")
                 finally:
                     row.cancel = None
-                    _idle(row.progress.set_visible, False)
+                    if not staged or staged[-1][0] is not app:      # cancelled or failed: no bar left behind
+                        _idle(row.progress.set_visible, False)
                     _idle(row.sync)
             if not staged:
                 return 0, ""
+            live, clear = stage_logger(log, {app.name: self.rows[app.id] for app, _ in staged})
+            for app, _ in staged:
+                _idle(self.rows[app.id].set_stage, "Preparing…")
             admin, user = updates.hub_steps(staged, close)
-            rc, out = helper.execute([["keep-going"], *admin], [["keep-going"], *user], None, log)
+            try:
+                rc, out = helper.execute([["keep-going"], *admin], [["keep-going"], *user], None, live)
+            finally:
+                clear()
             if rc == 0:
                 for app, _ in staged:
                     if app.section != "self":
@@ -852,6 +961,7 @@ class SysAppRow(Adw.ActionRow):
     def sync(self):
         busy = self.page.win.busy
         self.update_btn.set_sensitive(not busy)
+        self.update_btn.set_visible(bool(self.app.update) and not updates.app_ignored(self.app))
         self.trash.set_sensitive(not busy and not self.app.protected)
         if self.recipe:
             fav = favorites.is_favorite(self.recipe.key)
@@ -973,7 +1083,10 @@ class AppsPage:
                 _idle(self.show, apps, history.recent(apps, catalog), False, gen)
                 if winget.available():
                     self.win.system_upgrades = inventory.apply_winget(apps)
-                self.updates = {a.key: (a.version, a.update, a.winget_id, a.winget_source) for a in apps}
+                    _idle(self.show, apps, history.recent(apps, catalog), False, gen)
+                    inventory.match_by_name(apps)       # apps winget did not link, by exact name
+                self.updates = {a.key: (a.version, a.update, a.winget_id, a.winget_source,
+                                        a.extra.get("by_name", False)) for a in apps}
                 history.update_snapshot(apps)
             else:
                 inventory.forget_arp()
@@ -981,6 +1094,8 @@ class AppsPage:
                     old = self.updates.get(a.key)
                     if old:
                         a.winget_id, a.winget_source = old[2], old[3]
+                        if old[4]:
+                            a.extra["by_name"] = True
                         if old[0] == a.version:
                             a.update = old[1]
                 history.update_snapshot(apps)
@@ -1517,6 +1632,9 @@ class UpdateRow(Adw.ExpanderRow):
         else:
             scope = "for all users" if p.obj.machine else "for you"
             body = f"winget package {p.obj.winget_id} ({p.obj.winget_source or 'winget'}), installed {scope}"
+            if isinstance(p.obj.extra, dict) and p.obj.extra.get("by_name"):
+                body += ("\n\nwinget did not recognise the installed copy; App Hub found this package by the "
+                         "app's exact name. Updating installs the newest version over the old one.")
             link = ""
         lbl = Gtk.Label(label=body, xalign=0, wrap=True, selectable=True, margin_top=10,
                         margin_bottom=10, margin_start=14, margin_end=14,
@@ -1529,6 +1647,15 @@ class UpdateRow(Adw.ExpanderRow):
             web.add_suffix(Gtk.Image(icon_name="adw-external-link-symbolic"))
             web.connect("activated", lambda *_: open_uri(link))
             self.add_row(web)
+        # Patched or licence-locked apps must stay as they are: ignore their updates.
+        hold = Adw.ActionRow(title="Ignore this update",
+                             subtitle="For apps that must stay at their version (patched, licence-locked, …)")
+        hold.add_prefix(Gtk.Image(icon_name="action-unavailable-symbolic"))
+        buttons = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        buttons.append(text_button("Skip This Version", lambda: page.ignore(p, False)))
+        buttons.append(text_button("Don't Update This App", lambda: page.ignore(p, True)))
+        hold.add_suffix(buttons)
+        self.add_row(hold)
         self.sync()
 
     def sync(self):
@@ -1541,6 +1668,10 @@ class UpdateRow(Adw.ExpanderRow):
             self.progress.set_text(f"{core.human_size(done)} / {core.human_size(total)}")
         else:
             self.progress.pulse()
+
+    def set_stage(self, text, percent=None):
+        _stage(self, text, percent)
+        self.btn.set_visible(not text)
 
 
 class UpdatesPage:
@@ -1568,10 +1699,34 @@ class UpdatesPage:
         self.wu_row.add_prefix(Gtk.Image(icon_name="emblem-system-symbolic", pixel_size=24))
         self.wu_row.add_suffix(text_button("Open Windows Update", lambda: open_uri("ms-settings:windowsupdate")))
         self.wu_group.add(self.wu_row)
+        # Microsoft Store apps: the Store updates them, App Hub can ask it to do so now.
+        self.store_row = Adw.ActionRow(title="Microsoft Store apps",
+                                       subtitle="The Microsoft Store updates these apps")
+        self.store_row.add_prefix(Gtk.Image(icon_name="view-app-grid-symbolic", pixel_size=24))
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.store_btn = text_button("Check for Updates", self.store_updates)
+        self.store_btn.set_tooltip_text("Ask the Store to update all its apps now (administrator permission)")
+        box.append(self.store_btn)
+        box.append(flat_button("adw-external-link-symbolic", "Open the Store's downloads page",
+                               lambda: open_uri("ms-windows-store://downloadsandupdates")))
+        self.store_row.add_suffix(box)
+        self.wu_group.add(self.store_row)
+        # Apps with no update source App Hub can check (they update themselves or via Windows Update).
+        self.other_row = Adw.ExpanderRow(title="Apps App Hub cannot check",
+                                         subtitle="They update themselves, or through Windows Update")
+        self.other_row.add_prefix(Gtk.Image(icon_name="dialog-question-symbolic", pixel_size=24))
+        self.other_row.set_visible(False)
+        self.other_children = []
+        self.wu_group.add(self.other_row)
         self.empty = Adw.StatusPage(icon_name="emblem-ok-symbolic", title="Everything is up to date",
                                     description="Your apps have no pending updates")
         self.empty.set_visible(False)
-        self.widget, _ = scrolled_page(top, self.empty, self.apps_group, self.sys_group, self.wu_group)
+        self.ignored_group = Adw.PreferencesGroup(
+            title="Ignored Updates", description="Not offered and not in Update All · Allow brings them back")
+        self.ignored_group.set_visible(False)
+        self.ignored_rows = []
+        self.widget, _ = scrolled_page(top, self.empty, self.apps_group, self.sys_group, self.wu_group,
+                                       self.ignored_group)
         self.sync()
         self.check_windows_update()
 
@@ -1640,8 +1795,13 @@ class UpdatesPage:
             self.check_row.set_subtitle(f"Checked {total} GitHub apps and "
                                         f"{len(win.apps_page.apps)} installed apps at "
                                         + self.checked_at.format("%H:%M") + note)
-        self.check_spinner.set_visible(checking)
-        self.check_spinner.set_spinning(checking)
+        overall = getattr(self, "overall", "")
+        if overall and win.busy:            # several updates running: which one, how many left
+            self.check_row.set_title(overall)
+            self.check_row.set_subtitle("Each app below shows its own progress · Menu ▸ Activity Log has "
+                                        "every step")
+        self.check_spinner.set_visible(checking or bool(overall and win.busy))
+        self.check_spinner.set_spinning(checking or bool(overall and win.busy))
         self.check_btn.set_sensitive(not checking and not win.busy)
 
         signature = (tuple((p.kind, p.label, p.new) for p in pending)
@@ -1685,9 +1845,78 @@ class UpdatesPage:
             self.sys_rows.append((row, btn))
             self.sys_group.add(row)
         self.sys_group.set_title(f"System Updates ({len(sysup)})")
+        self.show_ignored()
 
     def row_for(self, app):
         return next((r for r in self.rows if r.pending.obj is app), None)
+
+    def set_overall(self, text):
+        self.overall = text
+        self.sync()
+
+    def ignore(self, pending, always):
+        updates.ignore(pending, always)
+        self.win.toast(f"{pending.label}: " + ("updates are ignored" if always else f"{pending.new} is skipped"))
+        self.signature = None
+        self.win.sync_update_everything()
+        self.win.home.sync()
+        self.win.library_page.sync()
+        self.win.apps_page.sync()
+
+    def allow(self, key, name):
+        updates.allow(key)
+        self.win.toast(f"{name}: updates are offered again")
+        self.signature = None
+        self.win.sync_update_everything()
+        self.win.home.sync()
+        self.win.library_page.sync()
+        self.win.apps_page.sync()
+
+    def show_ignored(self):
+        for row in self.ignored_rows:
+            self.ignored_group.remove(row)
+        self.ignored_rows = []
+        items = updates.ignored(self.win.hub_apps(), self.win.apps_page.apps if hasattr(self.win, "apps_page") else [])
+        items += [updates.Pending(r["name"], "winget", r["version"], r["available"],
+                                  inventory.SysApp("desktop", r["id"], r["name"], winget_id=r["id"]))
+                  for r in self.win.all_system_upgrades if updates.row_ignored(r)]
+        for p in items:
+            how = updates.ignored_how(p)
+            row = Adw.ActionRow(title=GLib.markup_escape_text(p.label), subtitle=GLib.markup_escape_text(
+                f"{p.old} → {p.new} · " + ("all updates ignored" if how == "app" else "this version skipped")))
+            row.add_suffix(text_button("Allow", lambda p=p: self.allow(p.key, p.label)))
+            self.ignored_rows.append(row)
+            self.ignored_group.add(row)
+        self.ignored_group.set_title(f"Ignored Updates ({len(items)})")
+        self.ignored_group.set_visible(bool(items))
+
+    def store_updates(self):
+        def work(log):
+            rc, out = helper.execute([["store-updates"]], [], None, log)
+            if rc == 0:
+                _idle(open_uri, "ms-windows-store://downloadsandupdates")
+            return rc, out
+        self.win.run_job("Update Microsoft Store apps", work)
+
+    def show_sources(self, apps):
+        """Store apps count, and the apps with no update source App Hub can check."""
+        store = [a for a in apps if a.channel == "store"]
+        self.store_row.set_subtitle(f"{len(store)} app{'s' if len(store) != 1 else ''} from the Store "
+                                    "(Photos, WhatsApp, …) are updated by the Microsoft Store" if store
+                                    else "The Microsoft Store updates its apps")
+        other = [a for a in apps if a.channel == "desktop" and not a.winget_id and not a.hub_id]
+        for row in self.other_children:
+            self.other_row.remove(row)
+        self.other_children = []
+        for a in other:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(a.name),
+                                subtitle=GLib.markup_escape_text(" · ".join(x for x in (a.source, a.version) if x)))
+            row.add_prefix(make_icon(a.icon, 28))
+            self.other_children.append(row)
+            self.other_row.add_row(row)
+        self.other_row.set_title(f"Apps App Hub cannot check ({len(other)})")
+        self.other_row.set_visible(bool(other))
+        self.store_btn.set_sensitive(not self.win.busy)
 
 
 # --------------------------------------------------------------------------
@@ -1972,12 +2201,21 @@ class CleanerPage:
 # --------------------------------------------------------------------------
 
 class Window(Adw.ApplicationWindow):
+    @property
+    def system_upgrades(self):
+        """winget 'system' updates (runtimes etc.) without the ignored ones."""
+        return [r for r in self.all_system_upgrades if not updates.row_ignored(r)]
+
+    @system_upgrades.setter
+    def system_upgrades(self, rows):
+        self.all_system_upgrades = list(rows)
+
     def __init__(self, application):
         super().__init__(application=application, title="App Hub", default_width=1040, default_height=740)
         self.busy = False
         self.installed = {}          # inventory key -> SysApp
         self.inventory_loaded = False
-        self.system_upgrades = []    # winget rows with updates outside the app list
+        self.all_system_upgrades = []    # winget rows with updates outside the app list
         self.log_buffer = Gtk.TextBuffer()
 
         self.toasts = Adw.ToastOverlay()
@@ -2224,7 +2462,17 @@ class Window(Adw.ApplicationWindow):
                 _idle(row.set_progress, done, total)
         title = f"Update {pending[0].label}" if len(pending) == 1 else f"Update {len(pending)} apps"
         self.ensure_closed(self.pending_folders(pending), lambda close: self.run_job(
-            title, lambda log: updates.run(pending, log, progress=progress, close=close)))
+            title, lambda log: self.live_update(pending, log, progress=progress, close=close)))
+
+    def live_update(self, pending, log, **kw):
+        """updates.run with each app's row on the Updates page showing what happens to it."""
+        rows = {p.label: r for p in pending if (r := self.updates_page.row_for(p.obj))}
+        live, clear = stage_logger(log, rows, overall=self.updates_page.set_overall)
+        try:
+            return updates.run(pending, live, **kw)       # stages start after the downloads
+        finally:
+            clear()
+            _idle(self.updates_page.set_overall, "")
 
     @staticmethod
     def pending_folders(pending):
@@ -2314,7 +2562,7 @@ class Window(Adw.ApplicationWindow):
                 include = system.get_active()
                 self.ensure_closed(self.pending_folders(pending), lambda close: self.run_job(
                     "Update everything",
-                    lambda log: updates.run(pending, log, system=include, system_rows=sysup, close=close)))
+                    lambda log: self.live_update(pending, log, system=include, system_rows=sysup, close=close)))
         dialog.connect("response", on_response)
         dialog.present(self)
 
@@ -2353,6 +2601,8 @@ class Window(Adw.ApplicationWindow):
     def inventory_ready(self, apps):
         self.installed = {a.key: a for a in apps}
         self.inventory_loaded = True
+        if hasattr(self, "updates_page"):
+            self.updates_page.show_sources(apps)
         self.home.sync()
         self.sync_update_everything()
 

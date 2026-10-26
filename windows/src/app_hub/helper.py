@@ -200,11 +200,24 @@ def _wait_gone(entry, seconds=60):
     return False
 
 
-def _run_winget(args, log):
+def progress_reporter(label, log, step=5):
+    """on_progress for run_command: a 'Progress: <label> NN% · text' log line per `step` percent
+    (the window turns these into a real progress bar on the app's row)."""
+    last = [-step]
+
+    def report(percent, text):
+        if percent >= last[0] + step or (percent == 100 and last[0] != 100):
+            last[0] = percent
+            log(f"Progress: {label} {percent}% · {text}")
+    return report
+
+
+def _run_winget(args, log, label=""):
     exe = winget.exe()
     if not exe:
         raise StepError("winget is not installed (get “App Installer” from the Microsoft Store)")
-    rc, _ = core.run_command([exe, *args[1:]], log)
+    rc, _ = core.run_command([exe, *args[1:]], log,
+                             on_progress=progress_reporter(label, log) if label else None)
     if rc and winget.explain(rc):
         log(f"winget: {winget.explain(rc)}")
     if (rc & 0xFFFFFFFF) == 0x8A15002B:    # nothing newer: not a failure
@@ -240,11 +253,14 @@ def run_step(step, log, elevated):
             log(f"{label}: restart Windows to finish")
         if rc not in installer.OK_CODES:
             log(f"{label}: the installer stopped (code {rc}): {installer.explain(itype, rc)}")
+        else:
+            log(f"Done: {label}")
         return 0 if rc in installer.OK_CODES else rc
 
     if kind == "portable":
         _, path, app_id, name, version, exe, publisher = step
         installer.install_portable(path, app_id, name, version, exe, publisher, log)
+        log(f"Done: {name}")
         return 0
 
     if kind == "uninstall":
@@ -270,7 +286,21 @@ def run_step(step, log, elevated):
         log(f"{action.capitalize()} {label} with winget")
         cmd = {"install": winget.install_cmd, "upgrade": winget.upgrade_cmd,
                "uninstall": winget.uninstall_cmd}[action](package_id, source)
-        return _run_winget(cmd, log)
+        rc = _run_winget(cmd, log, label)
+        log(f"Done: {label}" if rc == 0 else f"{label}: winget stopped (code {rc & 0xFFFFFFFF:#x})")
+        return rc
+
+    if kind == "store-updates":
+        log("Asking the Microsoft Store to update its apps")
+        r = winsys.powershell(
+            "Get-CimInstance -Namespace 'Root\\cimv2\\mdm\\dmmap' -ClassName "
+            "'MDM_EnterpriseModernAppManagement_AppManagement01' | Invoke-CimMethod -MethodName UpdateScanMethod "
+            "| Out-Null", timeout=300)
+        if r.returncode:
+            log("the Store did not accept the request: " + (r.stderr.strip().splitlines() or ["unknown error"])[0])
+            return r.returncode
+        log("Done: Microsoft Store apps (the Store downloads the updates in the background)")
+        return 0
 
     if kind == "winget-upgrade-all":
         log("Updating every app winget knows")

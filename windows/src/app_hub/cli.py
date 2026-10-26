@@ -316,7 +316,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     from . import ipc
     message = {"page": args.page or "", "file": os.path.abspath(args.file) if args.file else ""}
-    if not ipc.claim():
+    if not ipc.claim() and not os.environ.get("APP_HUB_SNAPSHOT"):   # screenshots may run beside it
         return 0 if ipc.send(message) else 1
     from . import gui
     return gui.run(page=args.page, file=message["file"])

@@ -6,10 +6,14 @@ updates of such apps) goes into one elevated plan, so Windows asks only once. A 
 app does not stop the others ("keep-going").
 """
 
+import json
 import os
+import time
 from dataclasses import dataclass
 
 from . import core, helper, installer
+
+IGNORED = os.path.join(core.DATA_DIR, "ignored-updates.json")
 
 
 @dataclass
@@ -20,9 +24,60 @@ class Pending:
     new: str
     obj: object       # core.App or inventory.SysApp
 
+    @property
+    def key(self):
+        """Stable name of the app for the ignore list."""
+        if self.kind == "hub":
+            return f"hub:{self.obj.id}"
+        return f"winget:{self.obj.winget_id or self.obj.key}"
 
-def collect(hub_apps, sys_apps):
-    """Pending updates from GitHub-release apps and from winget."""
+
+# --- ignored updates: "Skip This Version" and "Don't Update This App" ------
+# e.g. a patched or licence-locked app that must stay at its version.
+
+def _ignored():
+    try:
+        with open(IGNORED, encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_ignored(data):
+    os.makedirs(os.path.dirname(IGNORED), exist_ok=True)
+    tmp = IGNORED + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=1)
+    os.replace(tmp, IGNORED)
+
+
+def ignore(pending, always):
+    """always: never offer updates of this app; else only skip this version."""
+    data = _ignored()
+    data[pending.key] = {"name": pending.label, "version": "*" if always else pending.new, "time": time.time()}
+    _save_ignored(data)
+
+
+def allow(key):
+    data = _ignored()
+    data.pop(key, None)
+    _save_ignored(data)
+
+
+def ignored_how(pending):
+    """'' (not ignored), 'version' (this version skipped) or 'app' (all updates)."""
+    rule = _ignored().get(pending.key)
+    if not rule:
+        return ""
+    if rule.get("version") == "*":
+        return "app"
+    return "version" if rule.get("version") == pending.new else ""
+
+
+def collect(hub_apps, sys_apps, with_ignored=False):
+    """Pending updates from GitHub-release apps and from winget (without the ignored ones,
+    unless with_ignored)."""
     out, seen = [], set()
     for app in hub_apps:
         if app.update_available and app.id not in seen:
@@ -33,7 +88,28 @@ def collect(hub_apps, sys_apps):
         if not app.update or app.hub_id or not app.winget_id:
             continue  # App Hub's own apps are covered above
         out.append(Pending(app.name, "winget", app.version, app.update, app))
+    if not with_ignored:
+        out = [p for p in out if not ignored_how(p)]
     return out
+
+
+def ignored(hub_apps, sys_apps):
+    return [p for p in collect(hub_apps, sys_apps, with_ignored=True) if ignored_how(p)]
+
+
+def app_ignored(app):
+    """For the Update buttons on cards and rows: is this app's pending update ignored?"""
+    if getattr(app, "release", None) is not None and hasattr(app, "update_available"):
+        return app.update_available and bool(ignored_how(Pending(app.name, "hub", "", app.release.version, app)))
+    if getattr(app, "update", "") and getattr(app, "winget_id", ""):
+        return bool(ignored_how(Pending(app.name, "winget", app.version, app.update, app)))
+    return False
+
+
+def row_ignored(row):
+    """A winget 'system update' row (runtimes etc.) that is ignored."""
+    rule = _ignored().get(f"winget:{row['id']}")
+    return bool(rule) and rule.get("version") in ("*", row["available"])
 
 
 def close_step(name, location):
@@ -43,6 +119,8 @@ def close_step(name, location):
 
 def winget_step(app, action="upgrade", close=False):
     """(admin_plan, user_plan) for a winget action on an installed app."""
+    if action == "upgrade" and isinstance(app.extra, dict) and app.extra.get("by_name"):
+        action = "install"     # winget cannot link the installed copy: install the newest over it
     steps = (close_step(app.name, app.location) if close else []) + \
         [["winget", action, app.winget_id, app.winget_source, app.name]]
     if app.machine and not helper.winsys.is_elevated():

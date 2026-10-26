@@ -21,11 +21,12 @@ KINDS = {"msi": "Windows Installer (.msi)", "inno": "Inno Setup installer", "nsi
          "burn": "WiX installer", "squirrel": "Squirrel installer", "msix": "MSIX package",
          "zip": "portable app (.zip)", "portable-exe": "portable app (.exe)",
          "exe-installer": "installer (shows its own window)"}
+# Unattended, but with the installer's own progress window where it has one (no questions asked).
 SILENT = {
-    "msi": lambda p: ["msiexec.exe", "/i", p, "/qn", "/norestart"],
-    "inno": lambda p: [p, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CLOSEAPPLICATIONS"],
+    "msi": lambda p: ["msiexec.exe", "/i", p, "/qb!", "/norestart"],
+    "inno": lambda p: [p, "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CLOSEAPPLICATIONS"],
     "nsis": lambda p: [p, "/S"],
-    "burn": lambda p: [p, "/quiet", "/norestart"],
+    "burn": lambda p: [p, "/passive", "/norestart"],
     "squirrel": lambda p: [p, "--silent"],
     "exe-installer": lambda p: [p],
 }

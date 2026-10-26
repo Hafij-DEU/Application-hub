@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 
@@ -441,6 +442,39 @@ def _get_json(url):
         raise HubError(f"offline? ({reason})") from None
 
 
+def recent_releases(repo, count=15):
+    """The repository's newest releases (REST objects), newest first. GitHub answers the release
+    list with [] for accounts it hides from visitors even when signed in; then the tags come from
+    GraphQL (what `gh release list` uses) and each release is read by its tag."""
+    try:
+        data = _get_json(f"{API}/repos/{repo}/releases?per_page={count}")
+    except HubError:
+        data = []
+    if isinstance(data, list) and data:
+        return data
+    token = github_token()
+    if not token or "/" not in repo:
+        return []
+    owner, name = repo.split("/", 1)
+    query = ("query($o:String!,$n:String!,$c:Int!){repository(owner:$o,name:$n){releases(first:$c,"
+             "orderBy:{field:CREATED_AT,direction:DESC}){nodes{tagName}}}}")
+    body = json.dumps({"query": query, "variables": {"o": owner, "n": name, "c": count}}).encode()
+    req = urllib.request.Request(f"{API}/graphql", data=body, method="POST", headers={
+        "User-Agent": USER_AGENT, "Authorization": f"Bearer {token}", "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            nodes = json.load(resp)["data"]["repository"]["releases"]["nodes"]
+    except (urllib.error.URLError, OSError, ValueError, KeyError, TypeError):
+        return []
+    out = []
+    for node in nodes:
+        try:
+            out.append(_get_json(f"{API}/repos/{repo}/releases/tags/{urllib.parse.quote(node['tagName'])}"))
+        except HubError:
+            continue
+    return out
+
+
 def asset_kind(name):
     low = name.lower()
     for ext, kind in ((".msi", "msi"), (".exe", "exe"), (".zip", "zip"), (".msix", "msix"),
@@ -500,10 +534,8 @@ def fetch_release(app):
     if not pick_asset(data.get("assets", []), app.asset_pattern):
         # The newest release may ship only other platforms (e.g. a Linux-only fix):
         # use the newest stable release that has a Windows download.
-        try:
-            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=15")
-        except HubError:
-            recent = []
+        recent = recent_releases(app.repo)
+
         for r in recent if isinstance(recent, list) else []:
             if not r.get("draft") and not r.get("prerelease") and pick_asset(r.get("assets", []),
                                                                              app.asset_pattern):
@@ -531,13 +563,29 @@ def fetch_release(app):
             rel.sha256 = digest[7:]
         if app.version_from == "asset":
             rel.version = version_from_name(asset["name"]) or rel.version
+    recent = None
     for spec in app.browser_extensions:
-        extra = next((a for a in assets if a["name"].lower().endswith(".zip")
-                      and re.search(spec.get("pattern", r"\.zip$"), a["name"])), None)
+        def find(items):
+            return next((a for a in items if a["name"].lower().endswith(".zip")
+                         and re.search(spec.get("pattern", r"\.zip$"), a["name"])), None)
+        extra, version = find(assets), rel.version
+        if not extra:
+            # A release may ship only the app (e.g. just the Windows installer): the extension
+            # is then the one in the newest release that has it.
+            if recent is None:
+                recent = recent_releases(app.repo)
+
+            for r in recent if isinstance(recent, list) else []:
+                if not r.get("draft") and not r.get("prerelease"):
+                    extra = find(r.get("assets", []))
+                    if extra:
+                        version = clean_version(r.get("tag_name", ""))
+                        break
         if extra:
             digest = extra.get("digest") or ""
-            rel.extras.append({"folder": spec["folder"], "name": extra["name"],
-                               "url": extra["browser_download_url"], "api": extra.get("url", ""), "size": extra.get("size", 0),
+            rel.extras.append({"folder": spec["folder"], "name": extra["name"], "version": version,
+                               "url": extra["browser_download_url"], "api": extra.get("url", ""),
+                               "size": extra.get("size", 0),
                                "sha256": digest[7:] if digest.startswith("sha256:") else ""})
     sums = next((a for a in assets if a["name"].upper().startswith("SHA256SUMS")), None)
     if sums:
@@ -689,7 +737,8 @@ def browser_extensions_outdated(app):
     if not (app.installed and rel and rel.extras):
         return []
     return [x for x in rel.extras
-            if is_newer(rel.version, _browser_extension_version(browser_extension_dir(x["folder"])) or "0")]
+            if is_newer(x.get("version") or rel.version,
+                        _browser_extension_version(browser_extension_dir(x["folder"])) or "0")]
 
 
 def browser_extension_root(app):
@@ -754,7 +803,7 @@ def sync_browser_extensions(app, log=None, force=False):
             os.replace(tmp, target)
             done.append(target)
             if log:
-                log(f"{app.name}: browser extension {rel.version} → {target} "
+                log(f"{app.name}: browser extension {x.get('version') or rel.version} → {target} "
                     "(click Reload on its card in the browser's extensions page)")
         except (HubError, OSError, ValueError) as e:
             if log:
@@ -767,9 +816,10 @@ def sync_browser_extensions(app, log=None, force=False):
 AUTH_CANCELLED = (1223,)
 
 
-def run_command(cmd, on_line=None, cwd=None):
+def run_command(cmd, on_line=None, cwd=None, on_progress=None):
     """Run cmd (list or command-line string), streaming merged output lines.
-    Returns (returncode, full_output)."""
+    on_progress(percent, text) gets winget-style progress bars ("45.0 MB / 120 MB", "42%"),
+    which are not logged line by line. Returns (returncode, full_output)."""
     try:
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 stdin=subprocess.DEVNULL, cwd=cwd, **winsys.popen_kwargs())
@@ -788,7 +838,12 @@ def run_command(cmd, on_line=None, cwd=None):
                 break
             line, buf = buf[:cut], buf[cut + 1:]
             text = _decode(line).strip()
-            if text and not _is_spinner(text):
+            if text and _is_spinner(text):
+                if on_progress:
+                    got = progress_of(text)
+                    if got:
+                        on_progress(*got)
+            elif text:
                 lines.append(text)
                 if on_line:
                     on_line(text)
@@ -805,6 +860,23 @@ def _decode(data):
         return data.decode("utf-8")
     except UnicodeDecodeError:
         return data.decode("mbcs", "replace") if winsys.IS_WIN else data.decode("latin-1")
+
+
+_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3}
+
+
+def progress_of(text):
+    """(percent, short text) from a winget progress bar line, or None."""
+    m = re.search(r"([\d.]+)\s*([KMG]?B)\s*/\s*([\d.]+)\s*([KMG]?B)", text)
+    if m:
+        done = float(m.group(1)) * _UNITS[m.group(2)]
+        total = float(m.group(3)) * _UNITS[m.group(4)]
+        if total > 0:
+            return min(100, int(done * 100 / total)), f"{m.group(1)} {m.group(2)} / {m.group(3)} {m.group(4)}"
+    m = re.search(r"(\d{1,3})\s*%", text)
+    if m:
+        return min(100, int(m.group(1))), f"{m.group(1)}%"
+    return None
 
 
 def _is_spinner(text):

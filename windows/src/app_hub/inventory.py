@@ -434,6 +434,52 @@ def apply_winget(apps):
     return leftover
 
 
+NAME_CACHE = os.path.join(core.DATA_DIR, "winget-name-matches.json")
+NAME_CACHE_DAYS = 2
+
+
+def match_by_name(apps, on_found=None):
+    """Desktop apps winget did not link to a package: look the name up in winget (exact name,
+    one result only). A match gets winget_id and extra['by_name']; its update installs the
+    newest version over the old one. Answers are cached for two days."""
+    try:
+        with open(NAME_CACHE, encoding="utf-8") as f:
+            cache = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+    now = time.time()
+    changed = False
+    for app in apps:
+        if app.channel != "desktop" or app.winget_id or app.hub_id or app.protected:
+            continue
+        name = base_name(app.name)
+        key = norm(name)
+        if len(key) < 4:
+            continue
+        hit = cache.get(key)
+        if not hit or now - hit.get("time", 0) > NAME_CACHE_DAYS * 86400:
+            rows = [r for r in winget.search(name, timeout=60, exact_name=True) if r["source"] in ("winget", "")
+                    and norm(r["name"]) in (key, norm(app.name)) and winget.ID_RE.match(r["id"])]
+            hit = {"id": rows[0]["id"], "version": rows[0]["version"]} if len(rows) == 1 else {}
+            hit["time"] = now
+            cache[key] = hit
+            changed = True
+        if hit.get("id"):
+            app.winget_id, app.winget_source = hit["id"], "winget"
+            app.extra["by_name"] = True
+            latest = hit.get("version", "")
+            # '9.0.30729.6161' over '9.0.30729' is the same build written more precisely.
+            if latest and app.version and core.is_newer(latest, app.version) \
+                    and not latest.startswith(app.version + "."):
+                app.update = latest
+            if on_found:
+                on_found(app)
+    if changed:
+        os.makedirs(os.path.dirname(NAME_CACHE), exist_ok=True)
+        with open(NAME_CACHE, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=1)
+
+
 # --------------------------------------------------------------------------
 # uninstall commands
 # --------------------------------------------------------------------------

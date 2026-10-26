@@ -101,5 +101,39 @@ class Names(unittest.TestCase):
         self.assertFalse(core.compile_match(apps["app-hub"]).search("App Hub Helper Tools"))
 
 
+class Ignore(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from app_hub import updates
+        self.updates = updates
+        self.tmp = tempfile.mkdtemp()
+        self.saved, updates.IGNORED = updates.IGNORED, os.path.join(self.tmp, "ignored.json")
+
+    def tearDown(self):
+        self.updates.IGNORED = self.saved
+
+    def pending(self, new):
+        from app_hub import inventory
+        app = inventory.SysApp("desktop", "HKLM64\\x", "AOMEI Partition Assistant", version="10.4.1", update=new,
+                               winget_id="AOMEI.PartitionAssistant", winget_source="winget")
+        return app, self.updates.Pending(app.name, "winget", app.version, new, app)
+
+    def test_skip_version_and_app(self):
+        u = self.updates
+        app, p = self.pending("10.12.1")
+        self.assertEqual(len(u.collect([], [app])), 1)
+        u.ignore(p, always=False)
+        self.assertEqual(u.collect([], [app]), [])
+        self.assertTrue(u.app_ignored(app))
+        app2, p2 = self.pending("10.13.0")                  # a newer version comes back
+        self.assertEqual(len(u.collect([], [app2])), 1)
+        u.ignore(p2, always=True)
+        app3, _ = self.pending("11.0")
+        self.assertEqual(u.collect([], [app3]), [])
+        self.assertEqual(len(u.ignored([], [app3])), 1)
+        u.allow(p2.key)
+        self.assertEqual(len(u.collect([], [app3])), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

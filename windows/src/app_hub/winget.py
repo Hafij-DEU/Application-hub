@@ -127,10 +127,11 @@ def show(package_id, source="winget", timeout=60):
     return info if info.get("Id") or info.get("Version") else None
 
 
-def search(query, timeout=60):
+def search(query, timeout=60, exact_name=False):
     if not available():
         return []
-    r = winsys.run([exe(), "search", query, *COMMON], timeout=timeout)
+    cmd = [exe(), "search", "--name", query, "--exact", "--source", "winget"] if exact_name else [exe(), "search", query]
+    r = winsys.run([*cmd, *COMMON], timeout=timeout)
     return [_normal(x) for x in parse_tables(r.stdout)]
 
 
