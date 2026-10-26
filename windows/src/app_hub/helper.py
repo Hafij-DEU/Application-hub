@@ -75,6 +75,18 @@ def user_clean_folders():
             core.CACHE_DIR]
 
 
+def _app_folder(folder):
+    """An app's own install folder (not a drive, Windows, or a shared parent like Program Files)."""
+    if not folder or not os.path.isdir(folder):
+        return False
+    parents = [winsys.WINDIR, winsys.PROGRAMDATA, winsys.LOCALAPPDATA, winsys.APPDATA, winsys.HOME,
+               os.path.join(winsys.LOCALAPPDATA, "Programs"), *winsys.PROGRAM_FILES]
+    if any(_same(folder, p) for p in parents) or _inside(folder, winsys.WINDIR):
+        return False
+    drive, rest = os.path.splitdrive(os.path.abspath(folder))
+    return rest.strip("\\") != ""
+
+
 def _same(a, b):
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
@@ -205,6 +217,19 @@ def run_step(step, log, elevated):
     if kind in USER_ONLY and elevated:
         raise StepError(f"{kind} runs only without administrator rights")
 
+    if kind == "close-apps":
+        _, folder, label = step
+        if not _app_folder(folder):
+            raise StepError(f"refusing to close programs in {folder}")
+        running = winsys.running_in(folder)
+        if running:
+            names = sorted({os.path.basename(p) for _pid, p in running})
+            log(f"Closing {label} ({', '.join(names)})")
+            forced = winsys.close_programs([pid for pid, _p in running])
+            if forced:
+                log(f"{label} did not close by itself and was ended")
+        return 0
+
     if kind == "install":
         _, itype, path, label = step
         if not (_inside(path, core.CACHE_DIR) and os.path.isfile(path)):
@@ -213,6 +238,8 @@ def run_step(step, log, elevated):
         rc, _ = core.run_command(installer.silent_command(itype, path), log)
         if rc in (3010, 1641):
             log(f"{label}: restart Windows to finish")
+        if rc not in installer.OK_CODES:
+            log(f"{label}: the installer stopped (code {rc}): {installer.explain(itype, rc)}")
         return 0 if rc in installer.OK_CODES else rc
 
     if kind == "portable":

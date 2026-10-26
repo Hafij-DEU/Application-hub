@@ -6,6 +6,7 @@ updates of such apps) goes into one elevated plan, so Windows asks only once. A 
 app does not stop the others ("keep-going").
 """
 
+import os
 from dataclasses import dataclass
 
 from . import core, helper, installer
@@ -35,27 +36,35 @@ def collect(hub_apps, sys_apps):
     return out
 
 
-def winget_step(app, action="upgrade"):
+def close_step(name, location):
+    """Close the app's running programs first (only after the user agreed, see gui.ensure_closed)."""
+    return [["close-apps", location, name]] if location and os.path.isdir(location) else []
+
+
+def winget_step(app, action="upgrade", close=False):
     """(admin_plan, user_plan) for a winget action on an installed app."""
-    step = ["winget", action, app.winget_id, app.winget_source, app.name]
+    steps = (close_step(app.name, app.location) if close else []) + \
+        [["winget", action, app.winget_id, app.winget_source, app.name]]
     if app.machine and not helper.winsys.is_elevated():
-        return [step], []
-    return [], [step]
+        return steps, []
+    return [], steps
 
 
-def hub_steps(staged):
-    """Plans that install downloaded GitHub releases: [(app, path)] -> (admin_plan, user_plan)."""
+def hub_steps(staged, close=False):
+    """Plans that install downloaded GitHub releases: [(app, path)] -> (admin_plan, user_plan).
+    close: first close the apps if they are running (an installer cannot replace open files)."""
     admin, user = [], []
     for app, path in staged:
         if app.section == "self":
             continue          # App Hub replaces itself last (installer.start_self_update)
         kind = installer.detect(path)
-        step = installer.install_step(path, kind, app.name, app)
-        (admin if installer.needs_admin(kind, app.entry) else user).append(step)
+        steps = close_step(app.name, app.entry.location) if close and app.entry else []
+        steps.append(installer.install_step(path, kind, app.name, app))
+        (admin if installer.needs_admin(kind, app.entry) else user).extend(steps)
     return admin, user
 
 
-def run(pending, log, system=False, progress=None, cancel=None, system_rows=()):
+def run(pending, log, system=False, progress=None, cancel=None, system_rows=(), close=False):
     """Apply `pending` (and, with `system`, every other update winget offers).
     Returns (rc, output)."""
     lines = []
@@ -80,12 +89,12 @@ def run(pending, log, system=False, progress=None, cancel=None, system_rows=()):
             failed += 1
 
     admin, user = [["keep-going"]], [["keep-going"]]
-    a, u = hub_steps(staged)
+    a, u = hub_steps(staged, close)
     admin += a
     user += u
     for p in pending:
         if p.kind == "winget":
-            a, u = winget_step(p.obj)
+            a, u = winget_step(p.obj, close=close)
             admin += a
             user += u
     if system:

@@ -33,6 +33,21 @@ OK_CODES = {0, 3010, 1641}          # 3010/1641: done, restart Windows to finish
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
 
 
+EXIT_CODES = {
+    "inno": {1: "Setup could not start", 2: "cancelled before it began", 3: "a fatal error before installing",
+             4: "a fatal error while installing", 5: "cancelled: a program using its files could not be closed",
+             6: "it was ended", 7: "it could not prepare the installation", 8: "restart Windows first, then try again"},
+    "msi": {1602: "cancelled", 1603: "a fatal error while installing", 1618: "another installation is running",
+            1638: "another version is already installed", 1625: "blocked by a Windows policy",
+            1633: "this installer does not fit this PC"},
+    "nsis": {1: "cancelled", 2: "aborted by the installer"},
+}
+
+
+def explain(kind, rc):
+    return EXIT_CODES.get(kind, {}).get(rc, "see the Activity Log")
+
+
 def detect(path):
     """Installer kind of a downloaded file (see KINDS)."""
     low = path.lower()

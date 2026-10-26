@@ -140,16 +140,18 @@ def fetch(url, dest, log, cancel=None):
     os.replace(part, dest)
 
 
-def _place(path, label, app, admin, user, log):
+def _place(path, label, app, admin, user, log, close=False):
     kind = installer.detect(path)
     if not kind:
         raise core.HubError(f"{os.path.basename(path)} is not an installer, .msi or .zip")
     log(f"{label}: {installer.KINDS.get(kind, kind)}")
-    step = installer.install_step(path, kind, label, app)
-    (admin if installer.needs_admin(kind, getattr(app, "entry", None)) else user).append(step)
+    entry = getattr(app, "entry", None)
+    steps = [["close-apps", entry.location, label]] if close and entry and entry.location else []
+    steps.append(installer.install_step(path, kind, label, app))
+    (admin if installer.needs_admin(kind, entry) else user).extend(steps)
 
 
-def install_actions(recipe, catalog=None):
+def install_actions(recipe, catalog=None, close=False):
     """(admin_plan, user_plan, local) that install the recipe. local(log, admin, user)
     downloads first and adds its install step to the plans."""
     ch = recipe.channel
@@ -175,7 +177,7 @@ def install_actions(recipe, catalog=None):
             if not app.release.asset_url:
                 raise core.HubError(f"{recipe.name}: latest release has no Windows download")
             log(f"downloading {app.release.asset_name}")
-            _place(core.download(app), app.name, app, admin, user, log)
+            _place(core.download(app), app.name, app, admin, user, log, close)
             return 0
         return [], [], fetch_hub
 

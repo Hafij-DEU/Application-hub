@@ -310,6 +310,81 @@ def quote_args(args):
 
 
 # --------------------------------------------------------------------------
+# running programs (an app must be closed before it is updated or removed)
+# --------------------------------------------------------------------------
+
+def _norm_dir(folder):
+    return os.path.normcase(os.path.abspath(folder)).rstrip("\\") + "\\"
+
+
+def running_in(folder):
+    """[(pid, program path)] of processes started from inside `folder` (App Hub excluded)."""
+    if not IS_WIN or not folder or not os.path.isdir(folder):
+        return []
+    prefix = _norm_dir(folder)
+    pids = (wintypes.DWORD * 8192)()
+    needed = wintypes.DWORD()
+    if not kernel32.K32EnumProcesses(pids, ctypes.sizeof(pids), ctypes.byref(needed)):
+        return []
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.QueryFullProcessImageNameW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
+                                                    ctypes.POINTER(wintypes.DWORD)]
+    out, me = [], os.getpid()
+    for pid in pids[:needed.value // ctypes.sizeof(wintypes.DWORD)]:
+        if not pid or pid == me:
+            continue
+        handle = kernel32.OpenProcess(0x1000, False, pid)        # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            continue
+        try:
+            buf, size = ctypes.create_unicode_buffer(1024), wintypes.DWORD(1024)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)) and \
+                    os.path.normcase(buf.value).startswith(prefix):
+                out.append((pid, buf.value))
+        finally:
+            kernel32.CloseHandle(handle)
+    return out
+
+
+def _alive(pid):
+    handle = kernel32.OpenProcess(0x00100000, False, pid)       # SYNCHRONIZE
+    if not handle:
+        return False
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) != 0
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def close_programs(pids, wait=10.0):
+    """Ask the programs' windows to close (like clicking ×), then end what is still running
+    after `wait` seconds. Returns the pids that had to be ended by force."""
+    import time
+    pids = set(pids)
+    if not pids:
+        return []
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+
+    def each(hwnd, _lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value in pids and user32.IsWindowVisible(hwnd):
+            user32.PostMessageW(hwnd, 0x0010, 0, 0)               # WM_CLOSE
+        return True
+    user32.EnumWindows(WNDENUMPROC(each), 0)
+    deadline = time.time() + wait
+    while time.time() < deadline and any(_alive(p) for p in pids):
+        time.sleep(0.25)
+    forced = [p for p in pids if _alive(p)]
+    for pid in forced:                                            # tray apps hide instead of closing
+        run(["taskkill.exe", "/PID", str(pid), "/T", "/F"], timeout=30)
+    return forced
+
+
+# --------------------------------------------------------------------------
 # Recycle Bin
 # --------------------------------------------------------------------------
 

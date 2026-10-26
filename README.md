@@ -9,7 +9,7 @@ Flatpak and AppImage, with a single password prompt for everything.
 
 **Now also on Windows 11:** GitHub releases, winget and the Microsoft Store in the same window, with
 an IObit-style uninstaller. See [App Hub for Windows](windows/) ·
-[download `AppHubSetup-1.0.0.exe`](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.0).
+[download `AppHubSetup-1.0.1.exe`](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.1).
 
 [![Latest release](https://img.shields.io/github/v/release/Hafij-DEU/Application-hub?label=release&color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases/latest)
 ![Ubuntu 24.04+ · Debian 13](https://img.shields.io/badge/Ubuntu_24.04+_·_Debian_13-E95420?logo=ubuntu&logoColor=white)

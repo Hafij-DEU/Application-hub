@@ -381,7 +381,10 @@ class HubSection:
         apps = [a for a in apps if a.installable]
         if not apps:
             return
+        running = [(a.name, a.entry.location) for a in apps if a.entry and a.section != "self"]
+        self.win.ensure_closed(running, lambda close: self._install(apps, close))
 
+    def _install(self, apps, close):
         def work(log):
             staged = []
             for app in apps:
@@ -400,7 +403,7 @@ class HubSection:
                     _idle(row.sync)
             if not staged:
                 return 0, ""
-            admin, user = updates.hub_steps(staged)
+            admin, user = updates.hub_steps(staged, close)
             rc, out = helper.execute([["keep-going"], *admin], [["keep-going"], *user], None, log)
             if rc == 0:
                 for app, _ in staged:
@@ -1247,6 +1250,9 @@ class UninstallDialog(Adw.Dialog):
         if self.win.busy:
             self.win.toast("Wait for the current task to finish")
             return
+        self.win.ensure_closed([(a.name, a.location) for a in self.apps if a.channel != "store"], self.run)
+
+    def run(self, close):
         restore = self.restore.get_active() and self.restore.get_visible()
         admin, user = [["keep-going"]], [["keep-going"]]
         if restore:
@@ -1254,7 +1260,8 @@ class UninstallDialog(Adw.Dialog):
             admin.append(["restore-point", f"App Hub: before uninstalling {names}"])
         for app in self.apps:
             step, needs_admin = uninstall_step(app, force_admin=restore and app.channel == "desktop")
-            (admin if needs_admin else user).append(step)
+            steps = updates.close_step(app.name, app.location) if close and app.channel != "store" else []
+            (admin if needs_admin else user).extend(steps + [step])
         self.working("Uninstalling…")
         before = list(self.win.installed.values())
 
@@ -2216,7 +2223,46 @@ class Window(Adw.ApplicationWindow):
             if row:
                 _idle(row.set_progress, done, total)
         title = f"Update {pending[0].label}" if len(pending) == 1 else f"Update {len(pending)} apps"
-        self.run_job(title, lambda log: updates.run(pending, log, progress=progress))
+        self.ensure_closed(self.pending_folders(pending), lambda close: self.run_job(
+            title, lambda log: updates.run(pending, log, progress=progress, close=close)))
+
+    @staticmethod
+    def pending_folders(pending):
+        out = []
+        for p in pending:
+            if p.kind == "hub" and p.obj.entry and p.obj.section != "self":
+                out.append((p.label, p.obj.entry.location))
+            elif p.kind == "winget" and p.obj.location:
+                out.append((p.label, p.obj.location))
+        return out
+
+    def ensure_closed(self, apps, go):
+        """apps: [(name, install folder)]. If any of them is running, ask before closing it; then
+        go(close) runs (close=True: the plan closes those apps first)."""
+        if self.busy:
+            self.toast("Wait for the current task to finish")
+            return
+
+        def check():
+            running = [(name, folder) for name, folder in apps if folder and winsys.running_in(folder)]
+            _idle(ask, running)
+
+        def ask(running):
+            if not running:
+                go(False)
+                return
+            names = ", ".join(name for name, _ in running)
+            dialog = Adw.AlertDialog(
+                heading=f"Close {names}?",
+                body=f"{names} {'is' if len(running) == 1 else 'are'} running and must be closed first. "
+                     "App Hub asks it to close, and ends it if it does not. Save your work in it first.")
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("close", "Close and Continue")
+            dialog.set_response_appearance("close", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("close")
+            dialog.connect("response", lambda _d, r: r == "close" and go(True))
+            dialog.present(self)
+        _thread(check)
 
     def sync_update_everything(self):
         if not hasattr(self, "everything_banner"):
@@ -2265,8 +2311,10 @@ class Window(Adw.ApplicationWindow):
 
         def on_response(_d, resp):
             if resp == "update":
-                self.run_job("Update everything",
-                             lambda log: updates.run(pending, log, system=system.get_active(), system_rows=sysup))
+                include = system.get_active()
+                self.ensure_closed(self.pending_folders(pending), lambda close: self.run_job(
+                    "Update everything",
+                    lambda log: updates.run(pending, log, system=include, system_rows=sysup, close=close)))
         dialog.connect("response", on_response)
         dialog.present(self)
 
@@ -2414,15 +2462,19 @@ class Window(Adw.ApplicationWindow):
         UninstallDialog(self, apps).present(self)
 
     def update_apps(self, apps):
+        apps = [a for a in apps if a.hub_id or a.winget_id]
+        if apps:
+            self.ensure_closed([(a.name, a.location) for a in apps], lambda close: self._update_apps(apps, close))
+
+    def _update_apps(self, apps, close):
         actions = []
         for app in apps:
             if app.hub_id:
-                actions.append(favorites.install_actions(favorites.Recipe("hub", app.hub_id, app.name)))
-            elif app.winget_id:
-                admin, user = updates.winget_step(app)
+                actions.append(favorites.install_actions(favorites.Recipe("hub", app.hub_id, app.name),
+                                                         close=close))
+            else:
+                admin, user = updates.winget_step(app, close=close)
                 actions.append((admin, user, None))
-        if not actions:
-            return
         names = apps[0].name if len(apps) == 1 else f"{len(apps)} apps"
         self.run_job(f"Update {names}", lambda log: helper.execute(*helper.combine(actions), log))
 
