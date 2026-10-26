@@ -12,7 +12,9 @@ and the Microsoft Store, with an IObit-style uninstaller and a single administra
 ![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
 ![Python 3.12+](https://img.shields.io/badge/Python-3.12+-3776ab?logo=python&logoColor=white)
 
-[**Download**](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.3) ·
+[![Download AppHubSetup-1.0.3.exe](https://img.shields.io/badge/Download-AppHubSetup--1.0.3.exe-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Hafij-DEU/Application-hub/releases/download/windows-v1.0.3/AppHubSetup-1.0.3.exe)
+
+[Release notes](https://github.com/Hafij-DEU/Application-hub/releases/tag/windows-v1.0.3) ·
 [Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
 
 <img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
