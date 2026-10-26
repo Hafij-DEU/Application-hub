@@ -7,21 +7,13 @@
 **One window to install, update and remove every app on Ubuntu:** GitHub releases, apt, Snap,
 Flatpak and AppImage, with a single password prompt for everything.
 
-**Now also on Windows 11:** GitHub releases, winget and the Microsoft Store in the same window, with
-an IObit-style uninstaller. See [App Hub for Windows](windows/).
-
-[![Download for Windows](https://img.shields.io/badge/Download_for_Windows_11-AppHubSetup--1.0.3.exe-0078D4?style=for-the-badge&logo=windows11&logoColor=white)](https://github.com/Hafij-DEU/Application-hub/releases/download/windows-v1.0.3/AppHubSetup-1.0.3.exe)
-[![Download for Ubuntu](https://img.shields.io/badge/Download_for_Ubuntu-app--hub__1.7.4__all.deb-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)](https://github.com/Hafij-DEU/Application-hub/releases/download/v1.7.4/app-hub_1.7.4_all.deb)
-
 [![Latest release](https://img.shields.io/github/v/release/Hafij-DEU/Application-hub?label=release&color=3584e4)](https://github.com/Hafij-DEU/Application-hub/releases/latest)
 ![Ubuntu 24.04+ · Debian 13](https://img.shields.io/badge/Ubuntu_24.04+_·_Debian_13-E95420?logo=ubuntu&logoColor=white)
 ![GTK 4 + libadwaita](https://img.shields.io/badge/GTK_4-libadwaita-4a86cf?logo=gnome&logoColor=white)
 ![Python 3.10+](https://img.shields.io/badge/Python-3.10+-3776ab?logo=python&logoColor=white)
-[![Windows 11](https://img.shields.io/badge/Windows_11-0078D4?logo=windows11&logoColor=white)](windows/)
 
 [**Download**](https://github.com/Hafij-DEU/Application-hub/releases/latest) ·
-[Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works) ·
-[**Windows 11 version**](windows/)
+[Features](#features) · [Install](#install) · [Command line](#command-line) · [How it works](#how-it-works)
 
 <img src="docs/screenshots/my-apps.png" width="820" alt="App Hub showing My Apps">
 
