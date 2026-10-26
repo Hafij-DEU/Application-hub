@@ -436,34 +436,75 @@ def apply_winget(apps):
 
 NAME_CACHE = os.path.join(core.DATA_DIR, "winget-name-matches.json")
 NAME_CACHE_DAYS = 2
+BUILTIN_STORE = {
+    "calculator", "calendar", "camera", "gethelp", "mediaplayer", "notepad", "paint", "photos", "snippingtool",
+    "windowssecurity", "xbox", "microsoftstore", "phonelink", "soundrecorder", "clock", "maps", "weather", "news",
+    "stickynotes", "microsofttodo", "feedbackhub", "tips", "clipchamp", "outlook", "copilot", "microsoft365copilot",
+    "gamebar", "xboxgamebar", "mailandcalendar", "solitairecollection", "microsoftsolitairecollection", "quickassist",
+    "devhome", "microsoftteams", "windowsbackup", "familysafety", "microsoftfamilysafety", "onedrive", "edge",
+}
+
+
+def builtin_store_app(app):
+    """Apps that come with Windows: never part of a list for a new PC."""
+    return norm(app.name) in BUILTIN_STORE or (app.source == "Microsoft Corporation" and app.protected)
 
 
 def match_by_name(apps, on_found=None):
-    """Desktop apps winget did not link to a package: look the name up in winget (exact name,
-    one result only). A match gets winget_id and extra['by_name']; its update installs the
-    newest version over the old one. Answers are cached for two days."""
+    """Find packages by the app's exact name (one result only), the winget repository first and the
+    Microsoft Store second:
+    - desktop apps winget did not link get winget_id and extra['by_name']; their update installs the
+      newest version over the old one;
+    - Store apps get a winget-repository package when there is one, else their Store id;
+    - apps linked to the Store that also exist in the winget repository get extra['prefer_winget'],
+      so a new PC installs them from winget. Answers are cached for two days."""
     try:
         with open(NAME_CACHE, encoding="utf-8") as f:
             cache = json.load(f)
     except (OSError, ValueError):
         cache = {}
     now = time.time()
-    changed = False
-    for app in apps:
-        if app.channel != "desktop" or app.winget_id or app.hub_id or app.protected:
-            continue
-        name = base_name(app.name)
+    state = {"changed": False}
+
+    def lookup(name, alt, source):
         key = norm(name)
-        if len(key) < 4:
-            continue
-        hit = cache.get(key)
+        slot = f"{source}:{key}" if source == "msstore" else key
+        hit = cache.get(slot)
         if not hit or now - hit.get("time", 0) > NAME_CACHE_DAYS * 86400:
-            rows = [r for r in winget.search(name, timeout=60, exact_name=True) if r["source"] in ("winget", "")
-                    and norm(r["name"]) in (key, norm(app.name)) and winget.ID_RE.match(r["id"])]
+            rows = [r for r in winget.search(name, timeout=60, exact_name=True, source=source)
+                    if r["source"] in (source, "") and norm(r["name"]) in (key, norm(alt))
+                    and winget.ID_RE.match(r["id"])]
             hit = {"id": rows[0]["id"], "version": rows[0]["version"]} if len(rows) == 1 else {}
             hit["time"] = now
-            cache[key] = hit
-            changed = True
+            cache[slot] = hit
+            state["changed"] = True
+        return hit
+
+    for app in apps:
+        if app.channel not in ("desktop", "store") or app.hub_id or app.protected:
+            continue
+        if app.channel == "store" and builtin_store_app(app):
+            continue
+        name = base_name(app.name) if app.channel == "desktop" else app.name
+        if len(norm(name)) < 4:
+            continue
+        if app.winget_id:
+            if app.winget_source == "msstore":           # a Store edition: is it in the winget repository?
+                hit = lookup(name, app.name, "winget")
+                if hit.get("id"):
+                    app.extra["prefer_winget"] = hit["id"]
+            continue
+        hit = lookup(name, app.name, "winget")
+        if app.channel == "store":
+            if hit.get("id"):
+                app.extra["prefer_winget"] = hit["id"]
+            else:
+                hit = lookup(name, app.name, "msstore")
+                if hit.get("id"):
+                    app.winget_id, app.winget_source = hit["id"], "msstore"
+            if on_found and (hit.get("id")):
+                on_found(app)
+            continue                                    # the Store updates its own apps
         if hit.get("id"):
             app.winget_id, app.winget_source = hit["id"], "winget"
             app.extra["by_name"] = True
@@ -474,11 +515,10 @@ def match_by_name(apps, on_found=None):
                 app.update = latest
             if on_found:
                 on_found(app)
-    if changed:
+    if state["changed"]:
         os.makedirs(os.path.dirname(NAME_CACHE), exist_ok=True)
         with open(NAME_CACHE, "w", encoding="utf-8") as f:
             json.dump(cache, f, indent=1)
-
 
 # --------------------------------------------------------------------------
 # uninstall commands

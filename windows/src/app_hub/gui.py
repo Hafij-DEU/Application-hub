@@ -17,7 +17,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import (APP_ID, __version__, ai, cleaner, core, favorites, helper, history, installer,  # noqa: E402
-               inventory, ipc, leftovers, library, updates, winget, winsys)
+               discover, inventory, ipc, leftovers, library, updates, winget, winsys)
 
 ICON_DIR = os.path.join(core.LIB_DIR, "icons")
 FALLBACK_ICON = "application-x-executable-symbolic"
@@ -342,6 +342,8 @@ def _stage(row, text, percent=None):
     """Show what happens to an app right now: a bar with text; it moves back and forth while the
     amount is unknown, and fills up when `percent` is known (e.g. winget's download)."""
     row.stage = text
+    if text.startswith(FINAL):                       # Done / Failed / …: a still bar
+        percent = 100 if text.startswith(("Done", "Already")) else 0
     if text and percent is not None:
         if getattr(row, "pulse_id", 0):
             GLib.source_remove(row.pulse_id)
@@ -362,73 +364,138 @@ def _stage(row, text, percent=None):
             row.pulse_id = 0
 
 
-def stage_logger(log, rows, overall=None):
-    """Wrap a job's log: lines from the install steps move each app's row through its stages
-    (rows: {app name: row with set_stage}); overall(text) hears "Updating 3 of 7: 7-Zip".
-    Returns (log function, clear function)."""
+# What winget and the installers print, in plain words for an app's row.
+FRIENDLY = (
+    ("Found ", "Found the package"),
+    ("Downloading http", "Downloading…"),
+    ("Successfully verified installer hash", "Download verified"),
+    ("Starting package install", "Running the installer…"),
+    ("Successfully installed", "Installed, finishing…"),
+    ("Successfully uninstalled", "Removed the old version…"),
+    ("No applicable upgrade found", "Already up to date"),
+    ("No newer package versions are available", "Already up to date"),
+    ("No available upgrade found", "Already up to date"),
+    ("Installer failed with exit code", "Failed: the installer reported an error"),
+    ("The installer hash does not match", "Failed: the download did not match its checksum"),
+    ("Restart your PC", "Restart Windows to finish"),
+)
+FINAL = ("Done", "Failed", "Cancelled", "Already up to date", "Opened")
+
+
+def stage_logger(log, rows, overall=None, results=None):
+    """Wrap a job's log so every app's row says what happens to it right now.
+    rows: {app name: row with set_stage(text, percent) and, optionally, add_detail(line)};
+    overall(text) hears "Updating 3 of 7: 7-Zip"; results ({name: final text}) keeps how each app
+    ended (a failure stays visible after the job). Returns (log function, clear function)."""
     current = [None]          # the app the last named line was about (winget's own lines name none)
-    done, total = set(), len(rows)
+    finished, total = {}, len(rows)
+    by_row = {id(r): n for n, r in rows.items()}
 
     def tell(name):
         if overall and total > 1:
-            _idle(overall, f"Updating {min(len(done) + 1, total)} of {total}: {name}" if len(done) < total
+            n = len(finished)
+            _idle(overall, f"Updating {min(n + 1, total)} of {total}: {name}" if n < total
                   else f"Finishing {total} updates…")
 
+    def stage(name, text, percent=None):
+        _idle(rows[name].set_stage, text, percent)
+        if text.startswith(FINAL):
+            finished[name] = text
+            if results is not None:
+                results[name] = text
+
+    def detail(name, line):
+        if hasattr(rows[name], "add_detail"):
+            _idle(rows[name].add_detail, line)
+
+    def end(name, text, percent=None):
+        stage(name, text, percent)
+        current[0] = None
+        nxt = next((n for n in rows if n not in finished), None)
+        if nxt:
+            tell(nxt)
+
     def on_line(line):
-        if line.startswith("Done: "):
-            log(line)
-            name = line[len("Done: "):]
-            if name in rows:
-                done.add(name)
-                current[0] = None
-                _idle(rows[name].set_stage, "Done ✓", 100)
-                nxt = next((n for n in rows if n not in done), None)
-                if nxt:
-                    tell(nxt)
-            return
-        if line.startswith(("Installing ", "Asking Windows")) and total > 1 and not done and current[0] is None:
-            for name, row in rows.items():                   # everyone waits their turn
-                if not getattr(row, "stage", ""):
-                    _idle(row.set_stage, "Queued…")
         if line.startswith("Progress: "):
-            for name, row in rows.items():
+            for name in rows:
                 if line.startswith(f"Progress: {name} "):
-                    current[0] = row
+                    current[0] = rows[name]
                     tail = line[len(f"Progress: {name} "):]
-                    percent = int(tail.split("%", 1)[0]) if tail.split("%", 1)[0].isdigit() else None
-                    detail = tail.split("·", 1)[1].strip() if "·" in tail else ""
-                    text = f"Downloading {percent}%" + (f" · {detail}" if detail and "/" in detail else "")
-                    _idle(row.set_stage, text, percent)
+                    head = tail.split("%", 1)[0]
+                    percent = int(head) if head.isdigit() else None
+                    size = tail.split("·", 1)[1].strip() if "·" in tail else ""
+                    stage(name, f"Downloading {percent}%" + (f" · {size}" if "/" in size else ""), percent)
             if line.endswith(("0%", "5%")) and " · " in line:
                 log(line)                                  # every 5% in the Activity Log is enough
             return
         log(line)
-        if line.startswith("Asking Windows for administrator permission"):
-            for name, row in rows.items():
-                if name not in done:
-                    _idle(row.set_stage, "Waiting for administrator permission…")
+        if line.startswith("Done: "):
+            name = line[len("Done: "):]
+            if name in rows:
+                detail(name, "Done")
+                end(name, "Done ✓", 100)
             return
-        if current[0] is not None and line.startswith(("Successfully verified installer hash",
-                                                       "Starting package install", "Installing")):
-            _idle(current[0].set_stage, "Installing…")
-        for name, row in rows.items():
-            if name not in line or name in done:
-                continue
-            if current[0] is not row:
-                tell(name)
-            current[0] = row
+        if line.startswith("Self install: "):
+            name = line[len("Self install: "):].split(": opened", 1)[0]
+            if name in rows:
+                end(name, "Opened its page: install it yourself", 100)
+            return
+        if line.startswith("Administrator permission was not given"):
+            for name in rows:
+                if name not in finished:
+                    stage(name, "Cancelled: administrator permission was not given")
+            return
+        if line.startswith("Asking Windows for administrator permission"):
+            for name in rows:
+                if name not in finished:
+                    stage(name, "Waiting for administrator permission…")
+            return
+        if line.startswith(("Installing ", "Asking Windows")) and total > 1 and not finished and current[0] is None:
+            for name, row in rows.items():                   # everyone waits their turn
+                if not getattr(row, "stage", ""):
+                    stage(name, "Queued…")
+        # A line about a named app makes it the current one.
+        named = next((n for n in rows if n in line and n not in finished), None)
+        if named:
+            if current[0] is not rows[named]:
+                tell(named)
+            current[0] = rows[named]
+            detail(named, line)
             if line.startswith("Closing "):
-                _idle(row.set_stage, "Closing the app…")
+                stage(named, "Closing the app…")
             elif line.startswith(("Upgrade ", "Install ")) and "winget" in line:
-                _idle(row.set_stage, "Starting…")
-            elif line.startswith(("Installing ", "Unpacking ")):
-                _idle(row.set_stage, "Installing…")
-            elif "installed in" in line or "the installer stopped" in line:
-                _idle(row.set_stage, "")
+                stage(named, "Starting winget…")
+            elif line.startswith("Installing ") and "(" in line:
+                kind = line[line.rfind("(") + 1:].rstrip(")")
+                stage(named, f"Running the {kind}…")
+            elif line.startswith("Unpacking "):
+                stage(named, "Unpacking…")
+            elif "the installer stopped" in line or "winget stopped" in line:
+                end(named, "Failed: " + line.split(":", 1)[1].strip())
+            elif "did not close by itself" in line:
+                stage(named, "The app did not close; ended it")
+            return
+        # winget's and the installers' own lines name no app: they belong to the current one.
+        if current[0] is not None:
+            name = by_row.get(id(current[0]))
+            if name and name not in finished:
+                detail(name, line)
+                text = next((t for prefix, t in FRIENDLY if line.startswith(prefix)), None)
+                if line.startswith("winget: "):
+                    text = "Failed: " + line[len("winget: "):]
+                if line.startswith("error: "):
+                    text = "Failed: " + line[len("error: "):]
+                if text:
+                    if text.startswith(("Failed", "Already up to date")):
+                        end(name, text)
+                    else:
+                        stage(name, text)
 
     def clear():
-        for row in rows.values():
-            _idle(row.set_stage, "")
+        """The job is over: keep each app's final word (Done, Failed, …), drop the moving bars."""
+        for name, row in rows.items():
+            text = finished.get(name, "")
+            _idle(row.set_stage, text if text.startswith(("Failed", "Cancelled")) else "")
     return on_line, clear
 
 
@@ -1086,7 +1153,8 @@ class AppsPage:
                     _idle(self.show, apps, history.recent(apps, catalog), False, gen)
                     inventory.match_by_name(apps)       # apps winget did not link, by exact name
                 self.updates = {a.key: (a.version, a.update, a.winget_id, a.winget_source,
-                                        a.extra.get("by_name", False)) for a in apps}
+                                        a.extra.get("by_name", False), a.extra.get("prefer_winget", ""))
+                                for a in apps}
                 history.update_snapshot(apps)
             else:
                 inventory.forget_arp()
@@ -1096,6 +1164,8 @@ class AppsPage:
                         a.winget_id, a.winget_source = old[2], old[3]
                         if old[4]:
                             a.extra["by_name"] = True
+                        if old[5]:
+                            a.extra["prefer_winget"] = old[5]
                         if old[0] == a.version:
                             a.update = old[1]
                 history.update_snapshot(apps)
@@ -1607,7 +1677,10 @@ class UpdateRow(Adw.ExpanderRow):
         when = ""
         if p.kind == "hub" and p.obj.release and p.obj.release.published:
             when = " · released " + p.obj.release.published[:10]
-        self.set_subtitle(GLib.markup_escape_text(f"{p.old or '?'}  →  {p.new}{when}"))
+        self.base_subtitle = f"{p.old or '?'}  →  {p.new}{when}"
+        self.set_subtitle(GLib.markup_escape_text(self.base_subtitle))
+        self.set_subtitle_lines(2)
+        self.detail_lines = []
         if p.kind == "hub":
             icon = Gtk.Image(pixel_size=40)
             set_hub_icon(icon, p.obj)
@@ -1656,7 +1729,20 @@ class UpdateRow(Adw.ExpanderRow):
         buttons.append(text_button("Don't Update This App", lambda: page.ignore(p, True)))
         hold.add_suffix(buttons)
         self.add_row(hold)
+        # This app's own live log while it updates (what winget or its installer prints).
+        self.details = Gtk.Label(xalign=0, wrap=True, selectable=True, visible=False, margin_top=8,
+                                 margin_bottom=8, margin_start=14, margin_end=14,
+                                 wrap_mode=Pango.WrapMode.WORD_CHAR, css_classes=["log-view", "dim-label"])
+        self.add_row(self.details)
+        last = page.results.get(p.label, "")
+        if last.startswith(("Failed", "Cancelled")):          # how the last try ended
+            self.set_stage(last)
         self.sync()
+
+    def add_detail(self, line):
+        self.detail_lines = (self.detail_lines + [line])[-40:]
+        self.details.set_text("\n".join(self.detail_lines))
+        self.details.set_visible(True)
 
     def sync(self):
         self.btn.set_sensitive(not self.page.win.busy)
@@ -1671,13 +1757,18 @@ class UpdateRow(Adw.ExpanderRow):
 
     def set_stage(self, text, percent=None):
         _stage(self, text, percent)
-        self.btn.set_visible(not text)
+        failed = text.startswith(("Failed", "Cancelled"))
+        self.btn.set_visible(not text or failed)            # a failed app can be tried again
+        if failed:
+            self.btn.set_label("Try Again")
+        self.set_subtitle(GLib.markup_escape_text(self.base_subtitle + (f"\n{text}" if text else "")))
 
 
 class UpdatesPage:
     def __init__(self, win):
         self.win = win
         self.rows, self.sys_rows, self.signature = [], [], None
+        self.results = {}          # app name -> how its last update ended (Failed: … stays visible)
         self.checked_at = None
 
         self.check_row = Adw.ActionRow(title="Checking for updates…")
@@ -1848,7 +1939,14 @@ class UpdatesPage:
         self.show_ignored()
 
     def row_for(self, app):
-        return next((r for r in self.rows if r.pending.obj is app), None)
+        """The row of an app. Matched by the app's identity, not the object: All Apps reloads
+        its list in the background (new objects) while these rows stay."""
+        def key(obj):
+            if hasattr(obj, "update_available"):           # GitHub app (core.App)
+                return f"hub:{obj.id}"
+            return f"winget:{obj.winget_id or obj.key}"
+        wanted = key(app)
+        return next((r for r in self.rows if key(r.pending.obj) == wanted), None)
 
     def set_overall(self, text):
         self.overall = text
@@ -1948,52 +2046,232 @@ class OptionRow(Adw.ActionRow):
         self.star.set_icon_name("starred-symbolic" if fav else "non-starred-symbolic")
 
 
-class AIPage:
+class PickRow(Adw.ActionRow):
+    """An app that can be picked for installing: checkbox, name, where it comes from, and while it
+    installs, what happens to it right now (same stages as the Updates page)."""
+
+    def __init__(self, win, recipe, on_toggle=None, selected=False, latest="", icon=""):
+        super().__init__(title=GLib.markup_escape_text(recipe.name))
+        self.win, self.recipe, self.on_toggle = win, recipe, on_toggle
+        where = {"winget": "winget", "msstore": "Microsoft Store", "hub": "App Hub (GitHub)",
+                 "github": "GitHub", "web": "install it yourself"}.get(recipe.channel, recipe.channel)
+        place = recipe.url.split("/")[2] if recipe.channel == "web" and "//" in recipe.url else recipe.id
+        bits = [recipe.summary, f"{where} · {place}" + (f" · {latest}" if latest and latest != "Unknown" else "")]
+        self.base_subtitle = " · ".join(b for b in bits if b)
+        self.set_subtitle(GLib.markup_escape_text(self.base_subtitle))
+        self.set_subtitle_lines(2)
+        self.check = Gtk.CheckButton(active=selected, valign=Gtk.Align.CENTER)
+        self.check.connect("toggled", lambda *_: on_toggle and on_toggle())
+        self.add_prefix(self.check)
+        self.set_activatable_widget(self.check)
+        if icon:
+            self.add_prefix(make_icon(icon, 28, "application-x-executable-symbolic"))
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        self.progress = Gtk.ProgressBar(visible=False, valign=Gtk.Align.CENTER, width_request=110, show_text=True)
+        box.append(self.progress)
+        self.state = Gtk.Label(css_classes=["chip", "ok"], visible=False, valign=Gtk.Align.CENTER)
+        box.append(self.state)
+        box.append(badge(recipe.channel, recipe.channel_label))
+        self.add_suffix(box)
+        self.lines = []
+        self.sync()
+
+    @property
+    def selected(self):
+        return self.check.get_active() and self.check.get_sensitive()
+
+    def sync(self):
+        if getattr(self, "mine", False):          # New PC Setup: installed here, kept in the list
+            return
+        inst = self.win.find_installed(self.recipe) if self.win.inventory_loaded else None
+        self.state.set_label(f"✓ {inst.version}".strip() if inst else "")
+        self.state.set_visible(bool(inst) and not getattr(self, "stage", ""))
+        self.check.set_sensitive(not inst and not self.win.busy)
+        if inst:
+            self.check.set_active(False)
+
+    def set_stage(self, text, percent=None):
+        _stage(self, text, percent)
+        self.state.set_visible(False)
+        self.set_subtitle(GLib.markup_escape_text(self.base_subtitle + (f"\n{text}" if text else "")))
+
+    def add_detail(self, line):
+        self.lines = (self.lines + [line])[-12:]
+        self.set_tooltip_text("\n".join(self.lines))
+
+
+def install_recipes_live(win, recipes, rows, title, done=None):
+    """Install recipes in one job (one administrator prompt) with every row showing its status.
+    rows: {recipe name: PickRow}."""
+    if not recipes:
+        win.toast("Nothing selected")
+        return
+    try:
+        actions = [favorites.install_actions(r) for r in recipes]
+    except core.HubError as e:
+        win.alert("Cannot install", str(e))
+        return
+
+    def work(log):
+        live, clear = stage_logger(log, rows)
+        for row in rows.values():
+            _idle(row.set_stage, "Queued…" if len(rows) > 1 else "Starting…")
+        try:
+            return helper.execute(*helper.combine(actions), live)
+        finally:
+            clear()
+    win.run_job(title, work, done)
+
+
+class InstallPage:
+    """Install apps: search winget and the Microsoft Store, pick popular apps, or ask the AI."""
+
     def __init__(self, win):
         self.win = win
-        self.banner = Adw.Banner(title="Add a Gemini API key to search the web for install methods",
-                                 button_label="Preferences")
-        self.banner.connect("button-clicked", lambda *_: win.show_preferences())
-
         intro = Gtk.Label(wrap=True, xalign=0, label=(
-            "Name an app or describe what you need. Gemini searches the web for official ways to "
-            "install it, and App Hub checks each answer against winget, the Microsoft Store and "
-            "GitHub before offering it. Commands written by the AI are never run."))
+            "Find any app in winget and the Microsoft Store by its name, or tick popular apps below and "
+            "install them together with one administrator prompt. Ask AI looks on the web for anything else."))
         intro.add_css_class("dim-label")
         bar = Gtk.Box(spacing=8)
-        self.entry = Gtk.SearchEntry(placeholder_text="e.g. obsidian, or “a light video editor”",
-                                     hexpand=True)
-        self.entry.connect("activate", lambda *_: self.search())
-        self.find_btn = text_button("Find", self.search, "suggested-action")
-        bar.append(self.entry)
-        bar.append(self.find_btn)
+        self.entry = Gtk.SearchEntry(placeholder_text="Search apps, e.g. obsidian, vlc, “pdf editor”", hexpand=True)
+        self.entry.connect("activate", lambda *_: self.find())
+        self.find_btn = text_button("Search", self.find, "suggested-action")
+        self.ai_btn = text_button("Ask AI", self.search)
+        self.ai_btn.set_tooltip_text("Gemini searches the web; every answer is checked before it is offered")
+        for w in (self.entry, self.find_btn, self.ai_btn):
+            bar.append(w)
         self.spinner_row = Gtk.Box(spacing=8, visible=False)
         self.spinner = Gtk.Spinner()
         self.spinner_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END)
         self.spinner_row.append(self.spinner)
         self.spinner_row.append(self.spinner_label)
         self.results = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
-        page, _ = scrolled_page(intro, bar, self.spinner_row, self.results)
+        self.popular_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=24)
+        self.pick_rows = []           # popular + search results
+        self.option_rows = []         # AI answers
+        for title, icon, recipes in discover.popular():
+            group = Adw.PreferencesGroup(title=title)
+            for r in recipes:
+                row = PickRow(win, r, self.update_bar)
+                self.pick_rows.append(row)
+                group.add(row)
+            self.popular_box.append(group)
+        head = section_header("Popular apps", "Tick the ones you want, then Install Selected")
+        page, _ = scrolled_page(intro, bar, self.spinner_row, self.results, head, self.popular_box)
+        # Selection bar
+        self.sel_label = Gtk.Label(xalign=0, hexpand=True)
+        self.sel_btn = text_button("Install Selected", self.install_selected, "suggested-action")
+        self.sel_btn.add_css_class("pill")
+        sel = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=18, margin_end=18)
+        sel.append(self.sel_label)
+        sel.append(text_button("Clear", self.clear_selection))
+        sel.append(self.sel_btn)
+        self.sel_revealer = Gtk.Revealer(child=sel, transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
         self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-        self.widget.append(self.banner)
         self.widget.append(page)
+        self.widget.append(self.sel_revealer)
+        self.update_bar()
+
+    # --- selection ---
+
+    def chosen(self):
+        seen, out = set(), []
+        for row in self.pick_rows:
+            if row.selected and row.recipe.key not in seen:
+                seen.add(row.recipe.key)
+                out.append(row)
+        return out
+
+    def update_bar(self):
+        n = len(self.chosen())
+        self.sel_label.set_text(f"{n} app{'s' if n != 1 else ''} selected")
+        self.sel_btn.set_label(f"Install {n}" if n else "Install Selected")
+        self.sel_btn.set_sensitive(bool(n) and not self.win.busy)
+        self.sel_revealer.set_reveal_child(bool(n))
+
+    def clear_selection(self):
+        for row in self.pick_rows:
+            row.check.set_active(False)
+        self.update_bar()
+
+    def install_selected(self):
+        rows = self.chosen()
+        install_recipes_live(self.win, [r.recipe for r in rows], {r.recipe.name: r for r in rows},
+                             f"Install {len(rows)} app{'s' if len(rows) != 1 else ''}",
+                             lambda rc: self.clear_selection())
+
+    # --- search winget and the Store ---
+
+    def find(self):
+        query = self.entry.get_text().strip()
+        if not query:
+            return
+        if not winget.available():
+            self.win.alert("winget is missing", "Install “App Installer” from the Microsoft Store, or use Ask AI.")
+            return
+        self.busy(f"Searching winget and the Microsoft Store for “{query}”…")
+
+        def work():
+            found = discover.search(query)
+            _idle(self.show_found, query, found)
+        _thread(work)
+
+    def busy(self, text):
+        self.find_btn.set_sensitive(False)
+        self.ai_btn.set_sensitive(False)
+        self.spinner_row.set_visible(True)
+        self.spinner.set_spinning(True)
+        self.spinner_label.set_text(text)
+
+    def idle(self):
+        self.find_btn.set_sensitive(True)
+        self.ai_btn.set_sensitive(True)
+        self.spinner.set_spinning(False)
+        self.spinner_row.set_visible(False)
+
+    def clear_results(self):
+        while child := self.results.get_first_child():
+            self.results.remove(child)
+        self.pick_rows = [r for r in self.pick_rows if r.is_ancestor(self.popular_box)]
         self.option_rows = []
-        self.sync_key()
+
+    def show_found(self, query, found):
+        self.idle()
+        self.clear_results()
+        if not found:
+            status = Adw.StatusPage(icon_name="system-search-symbolic", title="Nothing found",
+                                    description="Try another name, or Ask AI to look on the web")
+            self.results.append(status)
+            self.update_bar()
+            return
+        group = Adw.PreferencesGroup(title=f"Results for “{query}” ({len(found)})",
+                                     description="Tick apps to install, or press Install on one")
+        for recipe, latest in found:
+            row = PickRow(self.win, recipe, self.update_bar, latest=latest)
+            one = text_button("Install", lambda r=recipe, w=row: install_recipes_live(
+                self.win, [r], {r.name: w}, f"Install {r.name}"))
+            one.set_valign(Gtk.Align.CENTER)
+            row.add_suffix(one)
+            row.one_btn = one
+            self.pick_rows.append(row)
+            group.add(row)
+        self.results.append(group)
+        self.update_bar()
+
+    # --- Ask AI (Gemini) ---
 
     def sync_key(self):
-        self.banner.set_revealed(not ai.api_key())
+        pass
 
     def search(self):
         query = self.entry.get_text().strip()
         if not query:
             return
         if not ai.api_key():
+            self.win.toast("Add a free Gemini API key in Preferences to use Ask AI")
             self.win.show_preferences()
             return
-        self.find_btn.set_sensitive(False)
-        self.spinner_row.set_visible(True)
-        self.spinner.set_spinning(True)
-        self.spinner_label.set_text("Searching the web with Gemini…")
+        self.busy("Searching the web with Gemini…")
 
         def work():
             try:
@@ -2004,12 +2282,8 @@ class AIPage:
         _thread(work)
 
     def show(self, answer, error):
-        self.find_btn.set_sensitive(True)
-        self.spinner.set_spinning(False)
-        self.spinner_row.set_visible(False)
-        while child := self.results.get_first_child():
-            self.results.remove(child)
-        self.option_rows = []
+        self.idle()
+        self.clear_results()
         if error:
             self.win.alert("AI search failed", error)
             return
@@ -2047,6 +2321,216 @@ class AIPage:
     def sync(self):
         for row in self.option_rows:
             row.sync()
+        for row in self.pick_rows:
+            row.sync()
+            if hasattr(row, "one_btn"):
+                row.one_btn.set_sensitive(not self.win.busy and row.check.get_sensitive())
+        self.update_bar()
+
+
+AIPage = InstallPage
+
+
+class SetupDialog(Adw.Dialog):
+    """New PC Setup: keep a list of your apps, then install them all on a fresh Windows."""
+
+    def __init__(self, win, open_path=""):
+        super().__init__(title="New PC Setup", content_width=700, content_height=720)
+        self.win, self.rows = win, []
+        header = Adw.HeaderBar()
+        open_btn = Gtk.Button(tooltip_text="Open a saved list (.ubundle, also from UniGetUI)")
+        open_btn.set_child(Adw.ButtonContent(icon_name="document-open-symbolic", label="Open List…"))
+        open_btn.connect("clicked", lambda *_: self.open_list())
+        save_btn = Gtk.Button(tooltip_text="Save the ticked apps as a list for your next PC")
+        save_btn.set_child(Adw.ButtonContent(icon_name="document-save-symbolic", label="Save List…"))
+        save_btn.connect("clicked", lambda *_: self.save_list())
+        header.pack_start(open_btn)
+        header.pack_end(save_btn)
+        intro = Gtk.Label(wrap=True, xalign=0, css_classes=["dim-label"], label=(
+            "Before you reinstall Windows: tick your apps and Save List (keep it on OneDrive or a USB stick). "
+            "On the new Windows: install App Hub, Open List, and Install Selected installs them all with one "
+            "administrator prompt. Lists are UniGetUI bundles, so UniGetUI opens them too."))
+        self.list_group = Adw.PreferencesGroup(title="From your list")
+        self.list_group.set_visible(False)
+        self.mine_group = Adw.PreferencesGroup(title="Apps on this PC",
+                                               description="Installed apps App Hub can install again")
+        self.popular_group = Adw.PreferencesGroup(title="Popular apps")
+        for title, icon, recipes in discover.popular():
+            exp = Adw.ExpanderRow(title=title)
+            exp.add_prefix(Gtk.Image(icon_name=icon or "application-x-executable-symbolic"))
+            for r in recipes:
+                row = PickRow(win, r, self.update_bar)
+                self.rows.append(row)
+                exp.add_row(row)
+            self.popular_group.add(exp)
+        self.fill_mine()
+        body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, margin_top=12, margin_bottom=12,
+                       margin_start=18, margin_end=18)
+        for w in (intro, self.list_group, self.mine_group, self.popular_group):
+            body.append(w)
+        self.sel_label = Gtk.Label(xalign=0, hexpand=True)
+        self.install_btn = text_button("Install Selected", self.install, "suggested-action")
+        self.install_btn.add_css_class("pill")
+        bottom = Gtk.Box(spacing=8, margin_top=8, margin_bottom=12, margin_start=18, margin_end=18)
+        bottom.append(self.sel_label)
+        bottom.append(text_button("Select None", self.select_none))
+        bottom.append(self.install_btn)
+        tv = Adw.ToolbarView(content=Gtk.ScrolledWindow(child=body, vexpand=True,
+                                                         hscrollbar_policy=Gtk.PolicyType.NEVER))
+        tv.add_top_bar(header)
+        tv.add_bottom_bar(bottom)
+        self.set_child(tv)
+        self.update_bar()
+        if open_path:
+            self.load(open_path)
+        elif os.path.exists(discover.LAST_LIST) and not any(r.selected for r in self.rows):
+            self.load(discover.LAST_LIST, quiet=True)
+
+    def fill_mine(self):
+        seen = set()
+        apps = sorted(self.win.installed.values(), key=lambda a: a.name.lower())
+        for a in apps:
+            r = favorites.from_sysapp(a)
+            if not r or r.key in seen or (r.channel == "hub" and r.id == "app-hub"):
+                continue                              # App Hub itself is installed first, by hand
+            seen.add(r.key)
+            r.summary = a.source
+            row = PickRow(self.win, r, self.update_bar, selected=True, icon=a.icon)
+            row.check.set_sensitive(True)            # on this PC they are installed: tick to keep in the list
+            row.check.set_active(True)
+            row.state.set_visible(False)
+            row.mine = True
+            self.rows.append(row)
+            self.mine_group.add(row)
+        # Apps no package source knows: listed as "install it yourself" (not ticked; tick what you want).
+        for a in apps:
+            if favorites.from_sysapp(a) or a.protected or a.hub_id:
+                continue
+            if a.channel == "store" and a.extra.get("family") and not inventory.builtin_store_app(a):
+                r = favorites.Recipe("web", a.extra["family"], a.name, summary="Microsoft Store: opens its Store page",
+                                     url=f"ms-windows-store://pdp/?PFN={a.extra['family']}")
+            elif a.channel == "desktop" and not a.name.lower().startswith(("microsoft visual c++", "microsoft windows")):
+                import urllib.parse
+                r = favorites.Recipe("web", inventory.norm(a.name)[:60] or "app", a.name,
+                                     summary=f"{a.source or 'No package source'}: opens a web search for its download",
+                                     url="https://www.bing.com/search?q=" + urllib.parse.quote(f"{a.name} official download"))
+            else:
+                continue
+            if r.key in seen:
+                continue
+            seen.add(r.key)
+            row = PickRow(self.win, r, self.update_bar, selected=False, icon=a.icon)
+            row.check.set_sensitive(True)
+            row.state.set_visible(False)
+            row.mine = True
+            self.rows.append(row)
+            self.mine_group.add(row)
+        if not seen:
+            self.mine_group.add(Adw.ActionRow(title="Your apps appear here after All Apps has loaded"))
+
+    def picked(self):
+        seen, out = set(), []
+        for row in self.rows:
+            if row.check.get_active() and row.recipe.key not in seen:
+                seen.add(row.recipe.key)
+                out.append(row)
+        return out
+
+    def update_bar(self):
+        if not hasattr(self, "sel_label"):          # rows are still being added
+            return
+        rows = self.picked()
+        todo = [r for r in rows if not self.win.find_installed(r.recipe)]
+        self.sel_label.set_text(f"{len(rows)} in the list · {len(todo)} not installed on this PC")
+        self.install_btn.set_label(f"Install {len(todo)}" if todo else "Install Selected")
+        self.install_btn.set_sensitive(bool(todo) and not self.win.busy)
+
+    def select_none(self):
+        for row in self.rows:
+            row.check.set_active(False)
+        self.update_bar()
+
+    def install(self):
+        todo = [r for r in self.picked() if not self.win.find_installed(r.recipe)]
+        install_recipes_live(self.win, [r.recipe for r in todo], {r.recipe.name: r for r in todo},
+                             f"New PC Setup: install {len(todo)} apps", lambda rc: self.update_bar())
+
+    # --- lists ---
+
+    def file_dialog(self, title):
+        flt = Gtk.FileFilter(name="App lists (.ubundle, .json)")
+        flt.add_pattern("*.ubundle")
+        flt.add_pattern("*.json")
+        store = Gio.ListStore.new(Gtk.FileFilter)
+        store.append(flt)
+        dialog = Gtk.FileDialog(title=title, filters=store, default_filter=flt)
+        try:
+            dialog.set_initial_folder(Gio.File.new_for_path(winsys.documents_dir()))
+        except (GLib.Error, TypeError):
+            pass
+        return dialog
+
+    def save_list(self):
+        rows = self.picked()
+        if not rows:
+            self.win.toast("Tick the apps to keep in the list first")
+            return
+        dialog = self.file_dialog("Save your app list")
+        dialog.set_initial_name("my-apps.ubundle")
+
+        def done(dlg, result):
+            try:
+                f = dlg.save_finish(result)
+            except GLib.Error:
+                return
+            versions = {}
+            for row in rows:
+                inst = self.win.find_installed(row.recipe)
+                if inst:
+                    versions[row.recipe.key] = inst.version
+            try:
+                n = discover.save([r.recipe for r in rows], f.get_path(), versions)
+                discover.save([r.recipe for r in rows], discover.LAST_LIST, versions)
+            except OSError as e:
+                self.win.alert("Could not save the list", str(e))
+                return
+            self.add_toast(Adw.Toast(title=f"Saved {n} apps to {os.path.basename(f.get_path())}"))
+        dialog.save(self.win, None, done)
+
+    def open_list(self):
+        def done(dlg, result):
+            try:
+                f = dlg.open_finish(result)
+            except GLib.Error:
+                return
+            self.load(f.get_path())
+        self.file_dialog("Open an app list").open(self.win, None, done)
+
+    def load(self, path, quiet=False):
+        try:
+            recipes, skipped = discover.load(path)
+        except (OSError, ValueError, core.HubError) as e:
+            if not quiet:
+                self.win.alert("Not an app list", f"{os.path.basename(path)}: {e}")
+            return
+        known = {r.recipe.key: r for r in self.rows}
+        added = 0
+        for recipe in recipes:
+            row = known.get(recipe.key)
+            if row:
+                row.check.set_active(True)
+                continue
+            row = PickRow(self.win, recipe, self.update_bar, selected=True)
+            self.rows.append(row)
+            self.list_group.add(row)
+            added += 1
+        self.list_group.set_visible(added > 0)
+        self.list_group.set_description(f"{os.path.basename(path)} · {len(recipes)} apps"
+                                        + (f" · skipped {len(skipped)} from other package managers" if skipped
+                                           else ""))
+        self.update_bar()
+        if not quiet:
+            self.add_toast(Adw.Toast(title=f"Opened {len(recipes)} apps from {os.path.basename(path)}"))
 
 
 # --------------------------------------------------------------------------
@@ -2224,10 +2708,12 @@ class Window(Adw.ApplicationWindow):
         self.stack = Adw.ViewStack()
         header.set_title_widget(Adw.ViewSwitcher(stack=self.stack, policy=Adw.ViewSwitcherPolicy.WIDE))
         header.pack_start(flat_button("view-refresh-symbolic", "Refresh", self.refresh_current))
-        header.pack_start(flat_button("document-open-symbolic", "Install a program file (.exe, .msi, .zip)",
-                                      self.pick_file))
+        header.pack_start(flat_button("computer-symbolic",
+                                      "New PC Setup: save a list of your apps, install them all on a new Windows",
+                                      self.new_pc_setup))
         menu = Gio.Menu()
         menu.append("Install a Program File…", "win.install-file")
+        menu.append("New PC Setup…", "win.new-pc")
         menu.append("Update Everything…", "win.update-everything")
         menu.append("Activity Log", "win.log")
         menu.append("Preferences", "win.preferences")
@@ -2243,7 +2729,7 @@ class Window(Adw.ApplicationWindow):
 
         for name, cb in (("log", self.show_log), ("preferences", self.show_preferences),
                          ("update-everything", self.confirm_update_everything),
-                         ("install-file", self.pick_file)):
+                         ("install-file", self.pick_file), ("new-pc", self.new_pc_setup)):
             act = Gio.SimpleAction.new(name, None)
             act.connect("activate", lambda *_a, f=cb: f())
             self.add_action(act)
@@ -2252,14 +2738,14 @@ class Window(Adw.ApplicationWindow):
         self.library_page = LibraryPage(self)
         self.apps_page = AppsPage(self)
         self.updates_page = UpdatesPage(self)
-        self.ai_page = AIPage(self)
+        self.ai_page = InstallPage(self)
         self.cleaner_page = CleanerPage(self)
         self.stack.add_titled_with_icon(self.home.widget, "home", "My Apps", "starred-symbolic")
         self.updates_tab = self.stack.add_titled_with_icon(self.updates_page.widget, "updates", "Updates",
                                                            "software-update-available-symbolic")
         self.stack.add_titled_with_icon(self.library_page.widget, "library", "Library", "view-app-grid-symbolic")
         self.stack.add_titled_with_icon(self.apps_page.widget, "apps", "All Apps", "view-grid-symbolic")
-        self.stack.add_titled_with_icon(self.ai_page.widget, "ai", "AI Install", "system-search-symbolic")
+        self.stack.add_titled_with_icon(self.ai_page.widget, "ai", "Install", "system-search-symbolic")
         self.stack.add_titled_with_icon(self.cleaner_page.widget, "cleaner", "Cleaner", "user-trash-symbolic")
         self.stack.connect("notify::visible-child-name", self.on_page)
         view.set_content(self.stack)
@@ -2467,7 +2953,8 @@ class Window(Adw.ApplicationWindow):
     def live_update(self, pending, log, **kw):
         """updates.run with each app's row on the Updates page showing what happens to it."""
         rows = {p.label: r for p in pending if (r := self.updates_page.row_for(p.obj))}
-        live, clear = stage_logger(log, rows, overall=self.updates_page.set_overall)
+        live, clear = stage_logger(log, rows, overall=self.updates_page.set_overall,
+                                   results=self.updates_page.results)
         try:
             return updates.run(pending, live, **kw)       # stages start after the downloads
         finally:
@@ -2787,9 +3274,15 @@ class Window(Adw.ApplicationWindow):
                 self.open_file(f.get_path())
         dialog.open(self, None, done)
 
+    def new_pc_setup(self, path=""):
+        SetupDialog(self, path).present(self)
+
     def open_file(self, path):
         if not os.path.isfile(path):
             self.alert("File not found", path)
+            return
+        if path.lower().endswith((".ubundle", ".json")):            # an app list
+            self.new_pc_setup(path)
             return
 
         def prepare():
@@ -2852,7 +3345,7 @@ class Window(Adw.ApplicationWindow):
 
 # `app-hub --page NAME`: page name -> stack page.
 PAGES = {"updates": "updates", "my-apps": "home", "library": "library",
-         "all-apps": "apps", "ai": "ai", "cleaner": "cleaner"}
+         "all-apps": "apps", "ai": "ai", "install": "ai", "cleaner": "cleaner"}
 
 
 class Application(Adw.Application):
@@ -2946,6 +3439,8 @@ def snapshot_pages(win, folder, pages, delay=12):
             apps = [a for a in win.apps_page.apps if not a.protected and a.channel == "desktop"][:2]
             if apps:
                 UninstallDialog(win, apps).present(win)
+        elif name == "setup":             # New PC Setup (nothing is installed)
+            win.new_pc_setup()
         elif name == "select":            # All Apps in selection mode
             win.show_page("apps")
             win.apps_page.select_btn.set_active(True)

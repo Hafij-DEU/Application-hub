@@ -6,6 +6,8 @@ A recipe says how to install one app from one channel:
   hub       an App Hub catalog / Library app
   github    the latest Windows download of a GitHub repository's releases
   url       an installer (.exe, .msi) or portable .zip at an https URL
+  web       no package anywhere: App Hub opens the official download page (or the app's Store
+            page) and you install it yourself
 """
 
 import json
@@ -20,7 +22,7 @@ from . import core, installer, winsys
 
 FAVORITES = os.path.join(core.DATA_DIR, "favorites.json")
 CHANNEL_LABELS = {"winget": "winget", "msstore": "Store", "hub": "App Hub", "github": "GitHub",
-                  "url": "Download"}
+                  "url": "Download", "web": "Self install"}
 
 
 @dataclass
@@ -52,6 +54,8 @@ class Recipe:
             return f"App Hub: latest release of {self.name}"
         if self.channel == "github":
             return f"latest Windows download from github.com/{self.id}/releases"
+        if self.channel == "web":
+            return f"install it yourself: {self.url}"
         return self.url
 
 
@@ -59,6 +63,9 @@ def from_sysapp(app):
     """Recipe that reinstalls an installed app, or None if it has no download source."""
     if app.hub_id:
         return Recipe("hub", app.hub_id, app.name, icon=app.icon)
+    extra = app.extra if isinstance(app.extra, dict) else {}
+    if extra.get("prefer_winget"):                     # the winget repository before the Store
+        return Recipe("winget", extra["prefer_winget"], app.name, icon=app.icon)
     if app.winget_id:
         return Recipe("msstore" if app.winget_source == "msstore" else "winget", app.winget_id, app.name,
                       icon=app.icon)
@@ -192,5 +199,15 @@ def install_actions(recipe, catalog=None, close=False):
             _place(target, recipe.name, app, admin, user, log)
             return 0
         return [], [], fetch_url
+
+    if ch == "web":
+        if not recipe.url.startswith(("https://", "ms-windows-store://")):
+            raise core.HubError(f"{recipe.name}: not an https or Microsoft Store link")
+
+        def open_page(log, admin, user):
+            winsys.open_path(recipe.url)
+            log(f"Self install: {recipe.name}: opened {recipe.url}")
+            return 0
+        return [], [], open_page
 
     raise core.HubError(f"unknown install channel: {ch}")
