@@ -23,6 +23,8 @@ CSS = """
 .disk-level.warning progress { background-color: @warning_color; }
 .disk-level.error progress { background-color: @error_color; }
 .release-notes { font-size: 0.92em; }
+.job-bar { padding: 8px 14px; background: alpha(@accent_color, 0.10); }
+.job-bar .job-title { font-weight: 700; }
 
 /* Cards and chips */
 .section-title { font-weight: 800; font-size: 1.3em; }
@@ -849,6 +851,11 @@ class SysAppRow(Adw.ActionRow):
                          subtitle=GLib.markup_escape_text(app.subtitle()))
         self.page, self.app = page, app
         self.set_subtitle_lines(2)
+        self.check = Gtk.CheckButton(valign=Gtk.Align.CENTER, visible=page.selecting,
+                                     active=app.key in page.selected, sensitive=not app.protected,
+                                     tooltip_text=app.protected or "Select to uninstall")
+        self.check.connect("toggled", lambda b: page.select(app, b.get_active()))
+        self.add_prefix(self.check)
         self.add_prefix(make_icon(app.icon, 40))
         box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
         box.append(badge(app.channel, app.channel_label))
@@ -931,8 +938,12 @@ class AppsPage:
         self.search.connect("search-changed", lambda *_: self.apply_filter())
         self.filter = Gtk.DropDown.new_from_strings([label for _, label in self.FILTERS])
         self.filter.connect("notify::selected", lambda *_: self.apply_filter())
+        self.select_btn = Gtk.ToggleButton(label="Select", tooltip_text="Select apps to uninstall together")
+        self.select_btn.connect("toggled", lambda b: self.set_selecting(b.get_active()))
         bar.append(self.search)
         bar.append(self.filter)
+        bar.append(self.select_btn)
+        self.selecting, self.selected = False, set()
 
         self.status = Adw.ActionRow(title="Looking for installed apps…")
         self.status.add_prefix(Gtk.Spinner(spinning=True))
@@ -949,7 +960,20 @@ class AppsPage:
             title="System Updates", description="Other packages with updates in your software sources")
         self.system_group.set_visible(False)
         self.system_rows = []
-        self.widget, _ = scrolled_page(bar, self.installed_group, self.system_group, self.removed_group)
+        scrolled, _ = scrolled_page(bar, self.installed_group, self.system_group, self.removed_group)
+        # Batch uninstall bar, shown in selection mode.
+        self.sel_label = Gtk.Label(xalign=0, hexpand=True)
+        self.sel_btn = text_button("Uninstall Selected", self.uninstall_selected, "destructive-action")
+        self.sel_btn.add_css_class("pill")
+        sel_bar = Gtk.Box(spacing=8, margin_top=8, margin_bottom=8, margin_start=18, margin_end=18)
+        sel_bar.append(self.sel_label)
+        sel_bar.append(text_button("Select None", self.clear_selection))
+        sel_bar.append(self.sel_btn)
+        self.sel_revealer = Gtk.Revealer(child=sel_bar, reveal_child=False,
+                                         transition_type=Gtk.RevealerTransitionType.SLIDE_UP)
+        self.widget = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        self.widget.append(scrolled)
+        self.widget.append(self.sel_revealer)
         self.updates = {}   # key -> (version, update), kept across quick reloads
         self.loading = False
 
@@ -980,6 +1004,7 @@ class AppsPage:
 
     def show(self, apps, removed, final):
         self.apps, self.removed = apps, removed
+        self.selected &= {a.key for a in apps}
         for row in self.rows:
             self.installed_group.remove(row)
         for row in self.removed_rows:
@@ -1018,6 +1043,41 @@ class AppsPage:
         self.loading = not final
         self.win.inventory_ready(apps)
         self.apply_filter()
+        self.update_selection()
+
+    # --- selection (batch uninstall) ---
+
+    def set_selecting(self, on):
+        self.selecting = on
+        if not on:
+            self.selected.clear()
+        for row in self.rows:
+            row.check.set_visible(on)
+            row.check.set_active(row.app.key in self.selected)
+        self.update_selection()
+
+    def select(self, app, on):
+        (self.selected.add if on else self.selected.discard)(app.key)
+        self.update_selection()
+
+    def clear_selection(self):
+        self.selected.clear()
+        for row in self.rows:
+            row.check.set_active(False)
+        self.update_selection()
+
+    def update_selection(self):
+        chosen = [a for a in self.apps if a.key in self.selected]
+        self.sel_label.set_text(f"{len(chosen)} selected" if chosen else "Tick the apps to remove")
+        self.sel_btn.set_label(f"Uninstall {len(chosen)}" if chosen else "Uninstall Selected")
+        self.sel_btn.set_sensitive(bool(chosen) and not self.win.busy)
+        self.sel_revealer.set_reveal_child(self.selecting)
+
+    def uninstall_selected(self):
+        chosen = [a for a in self.apps if a.key in self.selected]
+        if chosen:
+            self.win.confirm_uninstall(chosen)
+            self.select_btn.set_active(False)
 
     def apply_filter(self):
         text = self.search.get_text().lower().strip()
@@ -1034,9 +1094,145 @@ class AppsPage:
         self.update_all_btn.set_sensitive(not self.win.busy)
         for row in self.rows + self.removed_rows:
             row.sync()
+        self.update_selection()
 
     def update_all(self):
         self.win.confirm_update_everything()
+
+
+class JobDialog(Adw.Dialog):
+    """Confirm a list of apps, then run the job with what it does in view: the step, download
+    progress and the live log (uninstalling and Update All, as in App Hub for Windows)."""
+
+    def __init__(self, win, title, heading, rows, extra, action, style, run):
+        super().__init__(title=title, content_width=640, content_height=600)
+        self.win, self.run = win, run
+        self.stack = Gtk.Stack(transition_type=Gtk.StackTransitionType.SLIDE_LEFT, vexpand=True)
+        tv = Adw.ToolbarView(content=self.stack)
+        tv.add_top_bar(Adw.HeaderBar())
+        self.set_child(tv)
+        group = Adw.PreferencesGroup(title=heading)
+        for row in rows:
+            group.add(row)
+        go = text_button(action, self.start, style)
+        cancel = text_button("Cancel", self.close)
+        for b in (go, cancel):
+            b.add_css_class("pill")
+        self.stack.add_named(self.page([group, *extra], [cancel, go]), "confirm")
+        self.stack.add_named(self.work_page(), "work")
+
+    def page(self, children, bottom):
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14, margin_top=12, margin_bottom=12,
+                      margin_start=18, margin_end=18)
+        for c in children:
+            box.append(c)
+        outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        outer.append(Gtk.ScrolledWindow(child=box, vexpand=True, hscrollbar_policy=Gtk.PolicyType.NEVER))
+        bar = Gtk.Box(spacing=8, halign=Gtk.Align.END, margin_bottom=12, margin_start=18, margin_end=18)
+        for b in bottom:
+            bar.append(b)
+        outer.append(bar)
+        return outer
+
+    def work_page(self):
+        self.spinner = Gtk.Spinner(spinning=True)
+        self.heading = Gtk.Label(xalign=0, hexpand=True, css_classes=["title-3"],
+                                 ellipsize=Pango.EllipsizeMode.END)
+        head = Gtk.Box(spacing=10)
+        head.append(self.spinner)
+        head.append(self.heading)
+        self.detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label"])
+        self.bar = Gtk.ProgressBar(visible=False, show_text=True)
+        self.log_buffer = Gtk.TextBuffer()
+        self.log_view = Gtk.TextView(buffer=self.log_buffer, editable=False, cursor_visible=False,
+                                     wrap_mode=Gtk.WrapMode.WORD_CHAR, top_margin=8, bottom_margin=8,
+                                     left_margin=10, right_margin=10, css_classes=["card", "log-view"])
+        frame = Gtk.ScrolledWindow(child=self.log_view, vexpand=True, min_content_height=300)
+        self.close_btn = text_button("Close", self.close, "suggested-action")
+        self.close_btn.add_css_class("pill")
+        self.close_btn.set_visible(False)
+        return self.page([head, self.detail, self.bar, frame], [self.close_btn])
+
+    def start(self):
+        if self.win.busy:
+            self.win.toast("Wait for the current task to finish")
+            return
+        self.heading.set_text(self.get_title() + "…")
+        self.stack.set_visible_child_name("work")
+        self.set_can_close(False)
+        self.run(self)
+
+    def log(self, line):
+        self.log_buffer.insert(self.log_buffer.get_end_iter(), line + "\n")
+        self.log_view.scroll_to_mark(self.log_buffer.get_insert(), 0, False, 0, 0)
+        text = job_step(line)
+        if text:
+            self.detail.set_text(text)
+
+    def progress(self, what, done, total):
+        self.bar.set_visible(True)
+        if total:
+            self.bar.set_fraction(done / total)
+            self.bar.set_text(f"{what}: {core.human_size(done)} / {core.human_size(total)}")
+        else:
+            self.bar.pulse()
+            self.bar.set_text(what)
+        if total and done >= total:
+            self.bar.set_visible(False)
+
+    def finished(self, rc):
+        self.spinner.set_spinning(False)
+        self.spinner.set_visible(False)
+        self.bar.set_visible(False)
+        if rc == 0:
+            self.heading.set_text(self.get_title() + ": done")
+        elif rc in core.AUTH_CANCELLED:
+            self.heading.set_text("Authentication cancelled")
+        else:
+            self.heading.set_text(self.get_title() + ": finished with errors")
+            self.detail.set_text("See the log below for what went wrong")
+        self.set_can_close(True)
+        self.close_btn.set_visible(True)
+
+
+def job_step(line):
+    """A log line as a short 'what is happening now', or '' for noise."""
+    line = line.strip()
+    if not line or line.startswith("== "):
+        return ""
+    if line.startswith("+ "):
+        line = "Running " + line[2:]
+    return line[:200]
+
+
+class JobBar:
+    """Bar under the header while a job runs: what it is and the step it is on."""
+
+    def __init__(self, win):
+        self.widget = Gtk.Revealer(transition_type=Gtk.RevealerTransitionType.SLIDE_DOWN)
+        box = Gtk.Box(spacing=12, css_classes=["job-bar"])
+        box.append(Gtk.Spinner(spinning=True, valign=Gtk.Align.CENTER))
+        texts = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, hexpand=True, valign=Gtk.Align.CENTER)
+        self.title = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["job-title"])
+        self.detail = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.END, css_classes=["dim-label"])
+        texts.append(self.title)
+        texts.append(self.detail)
+        box.append(texts)
+        box.append(text_button("Details", win.show_log))
+        self.widget.set_child(box)
+
+    def show(self, title):
+        self.title.set_text(title)
+        self.detail.set_text("Starting…")
+        self.widget.set_reveal_child(True)
+
+    def step(self, line):
+        text = job_step(line)
+        if text:
+            self.detail.set_text(text)
+
+    def hide(self):
+        self.widget.set_reveal_child(False)
 
 
 # --------------------------------------------------------------------------
@@ -1551,6 +1747,8 @@ class Window(Adw.ApplicationWindow):
         self.everything_banner = Adw.Banner(button_label="Update Everything", revealed=False)
         self.everything_banner.connect("button-clicked", lambda *_: self.confirm_update_everything())
         view.add_top_bar(self.everything_banner)
+        self.job_bar = JobBar(self)
+        view.add_top_bar(self.job_bar.widget)
 
         for name, cb in (("log", self.show_log), ("preferences", self.show_preferences),
                          ("update-everything", self.confirm_update_everything),
@@ -1783,47 +1981,55 @@ class Window(Adw.ApplicationWindow):
         pending = self.pending_updates()
         if self.busy:
             return
-        names = {"hub": "GitHub", "apt": "Deb", "snap": "Snap", "flatpak": "Flatpak"}
-        lines = [f"• {p.label}  {p.old} → {p.new}  ({names[p.kind]})" for p in pending]
+        rows = []
+        for p in pending:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(p.label),
+                                subtitle=GLib.markup_escape_text(f"{p.old or '?'}  →  {p.new}"))
+            if p.kind == "hub":
+                icon = Gtk.Image(pixel_size=36)
+                set_hub_icon(icon, p.obj)
+            else:
+                icon = make_icon(p.obj.icon, 36)
+            row.add_prefix(icon)
+            row.add_suffix(badge(p.kind, CHANNEL_NAMES[p.kind]))
+            rows.append(row)
         sysup = [s for s in self.system_upgrades if not s[3]]
         staged = [s for s in self.system_upgrades if s[3]]
         if sysup:
-            lines.append(f"• System packages ({len(sysup)}): " + ", ".join(s[0] for s in sysup[:12])
-                         + (" …" if len(sysup) > 12 else ""))
-        if not lines:
-            lines.append("No updates are ready right now. App Hub refreshes the package lists "
-                         "and installs whatever is new.")
-        total = len(pending) + len(sysup)
-        dialog = Adw.AlertDialog(
-            heading="Update everything?" if not total else
-            f"Install {total} update{'s' if total != 1 else ''}?",
-            body="You enter your password once for all of them.")
-        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        listing = Gtk.Label(label="\n".join(lines), xalign=0, wrap=True, selectable=True)
-        box.append(Gtk.ScrolledWindow(child=listing, min_content_height=min(240, 22 * len(lines) + 10),
-                                      hscrollbar_policy=Gtk.PolicyType.NEVER, propagate_natural_height=True))
-        system = Gtk.CheckButton(label="Include system updates (apt update + upgrade)", active=True)
-        box.append(system)
-        early = Gtk.CheckButton(visible=bool(staged), label=(
-            f"Also install {len(staged)} staged update{'s' if len(staged) != 1 else ''} early"))
-        early.set_tooltip_text(", ".join(s[0] for s in staged) + "\n\nUbuntu rolls these out to a "
-                               "growing share of computers to catch problems first; normally they "
-                               "arrive here later on their own.")
+            row = Adw.ActionRow(title=f"System packages ({len(sysup)})", subtitle=GLib.markup_escape_text(
+                ", ".join(s[0] for s in sysup[:12]) + (" …" if len(sysup) > 12 else "")))
+            row.set_subtitle_lines(3)
+            row.add_prefix(Gtk.Image(icon_name="package-x-generic-symbolic", pixel_size=36))
+            row.add_suffix(badge("apt", "Deb"))
+            rows.append(row)
+        if not rows:
+            rows.append(Adw.ActionRow(title="No updates are ready right now", subtitle=(
+                "App Hub refreshes the package lists and installs whatever is new.")))
+        options = Adw.PreferencesGroup(title="Options")
+        system = Adw.SwitchRow(title="Include system updates", subtitle="apt update + upgrade", active=True)
+        early = Adw.SwitchRow(visible=bool(staged), title=(
+            f"Also install {len(staged)} staged update{'s' if len(staged) != 1 else ''} early"),
+            subtitle="Ubuntu rolls these out to a growing share of computers; normally they arrive later")
         system.bind_property("active", early, "sensitive", GObject.BindingFlags.SYNC_CREATE)
-        box.append(early)
-        dialog.set_extra_child(box)
-        dialog.add_response("cancel", "Cancel")
-        dialog.add_response("update", "Update All")
-        dialog.set_response_appearance("update", Adw.ResponseAppearance.SUGGESTED)
-        dialog.set_default_response("update")
+        options.add(system)
+        options.add(early)
+        note = Gtk.Label(wrap=True, xalign=0, css_classes=["dim-label", "caption"],
+                         label="You enter your password once for all of them.")
+        total = len(pending) + len(sysup)
 
-        def on_response(_d, resp):
-            if resp == "update":
-                self.run_job("Update everything",
-                             lambda log: updates.run(pending, log, system=system.get_active(),
-                                                     phased=early.get_active()))
-        dialog.connect("response", on_response)
-        dialog.present(self)
+        def run(dlg):
+            def progress(app, done, size):
+                _idle(dlg.progress, f"Downloading {app.name}", done, size)
+                row = self.updates_page.row_for(app)
+                if row:
+                    _idle(row.set_progress, done, size)
+            self.run_job("Update everything",
+                         lambda log: updates.run(pending, log, system=system.get_active(),
+                                                 phased=early.get_active(), progress=progress),
+                         dlg.finished, also_log=dlg.log, quiet=True)
+        JobDialog(self, "Update Everything" if not total else
+                  f"Install {total} Update{'s' if total != 1 else ''}",
+                  "Updates", rows, [options, note], "Update All", "suggested-action", run).present(self)
 
     def set_busy(self, busy):
         self.busy = busy
@@ -1875,29 +2081,40 @@ class Window(Adw.ApplicationWindow):
 
     # --- jobs ---
 
-    def run_job(self, title, work, done=None):
-        """work(log) -> (rc, output), run in a thread; one job at a time."""
+    def run_job(self, title, work, done=None, also_log=None, quiet=False):
+        """work(log) -> (rc, output), run in a thread; one job at a time. `also_log` gets each
+        line too (a job dialog); `quiet` leaves the result to it."""
         if self.busy:
             self.toast("Wait for the current task to finish")
             return
         self.set_busy(True)
         self.log(f"== {title}")
+        self.job_bar.show(title)
+
+        def log(line):
+            self.log(line)
+            self.job_bar.step(line)
+            if also_log:
+                also_log(line)
 
         def thread():
             try:
-                rc, out = work(lambda line: _idle(self.log, line))
+                rc, out = work(lambda line: _idle(log, line))
             except core.HubError as e:
                 rc, out = 1, str(e)
                 _idle(self.log, out)
             except Exception as e:  # keep the window usable whatever happens
                 rc, out = 1, f"{type(e).__name__}: {e}"
                 _idle(self.log, out)
-            _idle(self.job_done, title, rc, out, done)
+            _idle(self.job_done, title, rc, out, done, quiet)
         _thread(thread)
 
-    def job_done(self, title, rc, out, done):
+    def job_done(self, title, rc, out, done, quiet=False):
         self.set_busy(False)
-        if rc == 0:
+        self.job_bar.hide()
+        if quiet:
+            pass
+        elif rc == 0:
             self.toast(f"{title}: done")
         elif rc in core.AUTH_CANCELLED:
             self.toast("Authentication cancelled")
@@ -1941,62 +2158,77 @@ class Window(Adw.ApplicationWindow):
             self.toast(f"{recipe.name} added to Favorites")
         self.favorites_changed()
 
-    def confirm_uninstall(self, app):
-        if app.protected or self.busy:
+    UNINSTALL_HOW = {
+        "apt": "removed with apt",
+        "snap": "snapd keeps a snapshot of its data unless you delete it",
+        "flatpak": "removed from its Flatpak installation",
+        "appimage": "moved into App Hub's storage, so you can reinstall it from Recently Uninstalled",
+    }
+
+    def confirm_uninstall(self, apps):
+        """Uninstall one app or a selection (protected apps are left out)."""
+        apps = [a for a in (apps if isinstance(apps, (list, tuple)) else [apps]) if not a.protected]
+        if not apps or self.busy:
             return
+        rows = []
+        for app in apps:
+            row = Adw.ActionRow(title=GLib.markup_escape_text(app.name), subtitle=GLib.markup_escape_text(
+                f"{app.subtitle()} · {self.UNINSTALL_HOW.get(app.channel, '')}"))
+            row.set_subtitle_lines(3)
+            row.add_prefix(make_icon(app.icon, 36))
+            row.add_suffix(badge(app.channel, app.channel_label))
+            rows.append(row)
+        options = Adw.PreferencesGroup(title="Options")
+        purge = Adw.SwitchRow(title="Also delete settings and data",
+                              subtitle="Deb: purge system settings · Snap: no snapshot · Flatpak: ~/.var/app",
+                              visible=any(a.channel != "appimage" for a in apps))
+        options.add(purge)
+        extra = Gtk.Label(wrap=True, xalign=0, visible=False)
+        title = f"Uninstall {apps[0].name}" if len(apps) == 1 else f"Uninstall {len(apps)} Apps"
+        dialog = JobDialog(self, title, "Apps to remove", rows, [extra, options], "Uninstall",
+                           "destructive-action", lambda dlg: self.uninstall(apps, purge.get_active(), dlg))
+        dialog.present(self)
 
-        def prepare():
-            extra = []
-            if app.channel == "apt":
-                extra = [p for p in inventory.apt_removal_preview(app.id) if p != app.id]
-            _idle(show, extra)
+        apt = [a.id for a in apps if a.channel == "apt"]
 
-        def show(extra):
-            body = {
-                "apt": "The package is removed with apt.",
-                "snap": "The snap is removed. snapd keeps a snapshot of its data unless you delete it.",
-                "flatpak": f"The Flatpak is removed from the {app.installation} installation.",
-                "appimage": "The AppImage and its launcher are moved into App Hub's storage, so you "
-                            "can reinstall it from Recently Uninstalled.",
-            }[app.channel]
-            dialog = Adw.AlertDialog(heading=f"Uninstall {app.name}?", body=body)
-            box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-            if extra:
-                risky = [p for p in extra if p in inventory.PROTECTED_PACKAGES or p.startswith("ubuntu-")]
-                lbl = Gtk.Label(wrap=True, xalign=0, label=(
-                    f"Also removes {len(extra)} package{'s' if len(extra) > 1 else ''}: "
-                    + ", ".join(extra[:15]) + (" …" if len(extra) > 15 else "")
-                    + ("\n\nWarning: this includes parts of the desktop. Only continue if you are sure."
-                       if risky else "")))
-                if risky:
-                    lbl.add_css_class("error")
-                box.append(lbl)
-            purge = Gtk.CheckButton(label={
-                "apt": "Also delete its system settings (purge)",
-                "snap": "Also delete its data (no snapshot)",
-                "flatpak": "Also delete its data in ~/.var/app",
-            }.get(app.channel, ""), visible=app.channel != "appimage")
-            box.append(purge)
-            dialog.set_extra_child(box)
-            dialog.add_response("cancel", "Cancel")
-            dialog.add_response("remove", "Uninstall")
-            dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
-            dialog.set_default_response("cancel")
-            dialog.connect("response", lambda _d, r: r == "remove" and self.uninstall(app, purge.get_active()))
-            dialog.present(self)
-        _thread(prepare)
+        def preview():
+            more = sorted({p for pkg in apt for p in inventory.apt_removal_preview(pkg)} - set(apt))
+            if more:
+                _idle(show_extra, more)
 
-    def uninstall(self, app, purge):
-        icon = icon_file(app.icon) if app.icon else ""
-        if not icon and app.hub_id and os.path.exists(os.path.join(ICON_DIR, f"{app.hub_id}.png")):
-            icon = os.path.join(ICON_DIR, f"{app.hub_id}.png")
+        def show_extra(more):
+            risky = [p for p in more if p in inventory.PROTECTED_PACKAGES or p.startswith("ubuntu-")]
+            extra.set_text(f"Also removes {len(more)} package{'s' if len(more) > 1 else ''}: "
+                           + ", ".join(more[:15]) + (" …" if len(more) > 15 else "")
+                           + ("\n\nWarning: this includes parts of the desktop. Only continue if you are sure."
+                              if risky else ""))
+            if risky:
+                extra.add_css_class("error")
+            extra.set_visible(True)
+        if apt:
+            _thread(preview)
+
+    def uninstall(self, apps, purge, dialog=None):
+        apps = apps if isinstance(apps, (list, tuple)) else [apps]
+        icons = {}
+        for app in apps:
+            icon = icon_file(app.icon) if app.icon else ""
+            if not icon and app.hub_id and os.path.exists(os.path.join(ICON_DIR, f"{app.hub_id}.png")):
+                icon = os.path.join(ICON_DIR, f"{app.hub_id}.png")
+            icons[app.key] = icon
+        actions = [inventory.uninstall_actions(app, purge) for app in apps]
 
         def work(log):
-            rc, out = inventory.execute(*inventory.uninstall_actions(app, purge), log)
+            rc, out = inventory.execute(*inventory.combine(actions), log)
             if rc == 0:
-                history.record(app, icon)
+                for app in apps:
+                    history.record(app, icons[app.key])
             return rc, out
-        self.run_job(f"Uninstall {app.name}", work)
+        title = f"Uninstall {apps[0].name}" if len(apps) == 1 else f"Uninstall {len(apps)} apps"
+        if dialog:
+            self.run_job(title, work, dialog.finished, also_log=dialog.log, quiet=True)
+        else:
+            self.run_job(title, work)
 
     def update_apps(self, apps):
         actions = []
