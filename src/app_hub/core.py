@@ -73,6 +73,8 @@ class App:
     replaces: list = field(default_factory=list)   # old package names of this app
     installed: str | None = None
     installed_as: str = ""                         # package actually installed
+    installed_alt: str = ""                        # extension: metadata "version" (the integer GNOME counts),
+                                                   # when releases are tagged with it instead of version-name
     icon: str = ""                                 # icon file (Library apps)
     owner: str = ""                                # Library group; "" = My Apps
     section: str = ""                              # "self" = App Hub itself, "mine" = added to My Apps,
@@ -94,7 +96,11 @@ class App:
     def update_available(self):
         if not (self.installed and self.release and self.release.asset_url):
             return False
-        return self.renamed or is_newer(self.release.version, self.installed)
+        if self.renamed:
+            return True
+        if self.installed_alt and clean_version(self.installed_alt) == self.release.version:
+            return False
+        return is_newer(self.release.version, self.installed)
 
     @property
     def renamed(self):
@@ -230,9 +236,10 @@ def installed_version(package):
 
 def refresh_installed(apps):
     for app in apps:
-        app.installed, app.installed_as = None, ""
+        app.installed, app.installed_as, app.installed_alt = None, "", ""
         if app.extension:
             app.installed = extension_version(app)
+            app.installed_alt = extension_version(app, raw=True) or ""
             continue
         for pkg in [app.package, *app.replaces]:
             version = installed_version(pkg)
@@ -722,14 +729,17 @@ def extension_dir(app):
     return os.path.join(SYSTEM_EXT_DIR if app.system else USER_EXT_DIR, app.extension)
 
 
-def extension_version(app):
-    """Installed version from metadata.json (version-name, else version), or None."""
+def extension_version(app, raw=False):
+    """Installed version from metadata.json (version-name, else version), or None.
+    raw=True gives the integer "version" field instead (GNOME's own counter)."""
     try:
         with open(os.path.join(extension_dir(app), "metadata.json"), encoding="utf-8") as f:
             meta = json.load(f)
     except (OSError, ValueError):
         return None
-    version = meta.get("version-name") or meta.get("version")
+    version = meta.get("version") if raw else meta.get("version-name") or meta.get("version")
+    if raw and version is None:
+        return None
     return str(version) if version is not None else "0"
 
 
