@@ -98,6 +98,14 @@
       ]
     },
     {
+      "id": "memory-sweep",
+      "name": "Memory Sweep",
+      "summary": "See what fills your RAM, end it, and set up zram and swap",
+      "repo": "Hafij-DEU/memory-sweep",
+      "package": "memory-sweep",
+      "desktop": "io.github.hafij_bge.MemorySweep.desktop"
+    },
+    {
       "id": "fusion-desk",
       "name": "Fusion Desk",
       "summary": "Taskbar, start menu and widgets in one panel",
