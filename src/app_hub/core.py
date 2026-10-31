@@ -321,12 +321,47 @@ _api_lock = threading.Lock()
 API_CACHE = os.path.join(CACHE_DIR, "api-cache.json")
 
 
+API_CACHE_DAYS = 30     # answers not asked for again in this long are dropped
+_RELEASE_KEYS = ("tag_name", "html_url", "body", "published_at", "draft", "prerelease")
+_ASSET_KEYS = ("name", "browser_download_url", "size", "digest", "download_count")
+_api_mem = None         # the cache file, read once per process
+
+
+def _slim_release(r, body=True):
+    out = {k: r.get(k) for k in _RELEASE_KEYS if body or k != "body"}
+    out["assets"] = [{k: a.get(k) for k in _ASSET_KEYS} for a in r.get("assets") or []]
+    return out
+
+
+def _slim(data):
+    """Keep only the release fields App Hub reads (GitHub sends uploader objects, URLs
+    for every asset, …): the cache file shrinks to about a quarter."""
+    if isinstance(data, dict) and "tag_name" in data:
+        return _slim_release(data)
+    if isinstance(data, list):
+        return [_slim_release(r, body=i < 10) if isinstance(r, dict) and "tag_name" in r else r
+                for i, r in enumerate(data)]
+    return data
+
+
 def _api_cache_load():
-    try:
-        with open(API_CACHE, encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    """The cache as a dict (shared, read once). A broken file is deleted, old entries dropped."""
+    global _api_mem
+    if _api_mem is None:
+        try:
+            with open(API_CACHE, encoding="utf-8") as f:
+                cache = json.load(f)
+            if not isinstance(cache, dict):
+                raise ValueError("not a dict")
+        except FileNotFoundError:
+            cache = {}
+        except (OSError, ValueError):
+            _unlink(API_CACHE)
+            cache = {}
+        cutoff = time.time() - API_CACHE_DAYS * 86400
+        _api_mem = {u: dict(e, data=_slim(e["data"])) for u, e in cache.items()
+                    if isinstance(e, dict) and "data" in e and (e.get("time") or 0) > cutoff}
+    return _api_mem
 
 
 def _api_cache_store(url, etag, data):
@@ -334,9 +369,9 @@ def _api_cache_store(url, etag, data):
         cache = _api_cache_load()
         cache[url] = {"etag": etag, "data": data, "time": time.time()}
         os.makedirs(CACHE_DIR, exist_ok=True)
-        tmp = f"{API_CACHE}.{threading.get_ident()}.tmp"
+        tmp = f"{API_CACHE}.{os.getpid()}.{threading.get_ident()}.tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache, f)
+            json.dump(cache, f, separators=(",", ":"))
         os.replace(tmp, API_CACHE)
 
 
@@ -363,7 +398,7 @@ def _get_json(url):
         req.add_header("If-None-Match", cached["etag"])
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            data = json.load(resp)
+            data = _slim(json.load(resp))
             _api_cache_store(url, resp.headers.get("ETag", ""), data)
             return data
     except urllib.error.HTTPError as e:
@@ -594,6 +629,79 @@ def _unlink(path):
 
 def clear_cache(app):
     shutil.rmtree(os.path.join(CACHE_DIR, app.id), ignore_errors=True)
+
+
+def clear_staging():
+    """Delete the .debs fetched for installs from the Library, AI Install and updates of
+    other apps (they are fetched again when needed)."""
+    shutil.rmtree(os.path.join(CACHE_DIR, "favorites"), ignore_errors=True)
+
+
+DOWNLOAD_KEEP_DAYS = 2      # a download not installed within this long is deleted
+_MAGIC = {".deb": b"!<arch>\n", ".zip": b"PK\x03\x04"}
+
+
+def _looks_broken(path):
+    magic = _MAGIC.get(os.path.splitext(path)[1].lower())
+    if not magic:
+        return False
+    try:
+        with open(path, "rb") as f:
+            return f.read(len(magic)) != magic
+    except OSError:
+        return True
+
+
+def prune_downloads(keep_days=DOWNLOAD_KEEP_DAYS):
+    """Delete leftover downloads: unfinished (.part, older than an hour), broken (not a real
+    .deb/.zip) or older than keep_days. Installed downloads are already deleted by
+    finish_install. Returns the bytes freed."""
+    now, freed = time.time(), 0
+    try:
+        folders = [e.path for e in os.scandir(CACHE_DIR) if e.is_dir(follow_symlinks=False)]
+    except OSError:
+        return 0
+    for folder in folders:
+        for root, _dirs, files in os.walk(folder):
+            for name in files:
+                path = os.path.join(root, name)
+                try:
+                    st = os.lstat(path)
+                except OSError:
+                    continue
+                age = now - st.st_mtime
+                if (age > keep_days * 86400 or (name.endswith(".part") and age > 3600)
+                        or (not name.endswith(".part") and _looks_broken(path))):
+                    _unlink(path)
+                    freed += st.st_size
+        for root, _dirs, _files in os.walk(folder, topdown=False):
+            try:
+                os.rmdir(root)          # only succeeds when empty
+            except OSError:
+                pass
+    return freed
+
+
+def release_memory():
+    """Give freed memory back to the system. glibc keeps freed blocks for reuse, so after a big
+    temporary allocation (an apt cache is ~75 MB) the process would otherwise stay that large."""
+    import gc
+    gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except (OSError, AttributeError):
+        pass
+
+
+def limit_malloc_arenas(n=2):
+    """glibc gives each worker thread its own heap ("arena") and rarely returns their memory;
+    with many short-lived threads that is 100+ MB. A couple of shared arenas are plenty here."""
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").mallopt(-8, n)     # M_ARENA_MAX
+    except (OSError, AttributeError):
+        pass
 
 
 def finish_install(app, log=None):

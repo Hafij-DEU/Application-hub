@@ -49,6 +49,25 @@ def _thread(fn, *args):
     threading.Thread(target=fn, args=args, daemon=True).start()
 
 
+_release_pending = False
+
+
+def release_memory_soon():
+    """core.release_memory() a few seconds from now, once GTK has dropped replaced widgets;
+    several calls in a row share one run."""
+    global _release_pending
+    if _release_pending:
+        return
+
+    def run():
+        global _release_pending
+        _release_pending = False
+        core.release_memory()
+        return False
+    _release_pending = True
+    GLib.timeout_add_seconds(3, run)
+
+
 def make_icon(icon, size=40, fallback="application-x-executable"):
     img = Gtk.Image(pixel_size=size)
     gicon = None
@@ -401,7 +420,10 @@ class HubSection:
         for app in self.apps:
             app.release, app.error = None, ""
         self.sync()
-        _thread(core.check_all, self.apps, lambda app: _idle(self.sync))
+        def check():
+            core.check_all(self.apps, lambda app: _idle(self.sync))
+            _idle(release_memory_soon)
+        _thread(check)
 
     def sync(self):
         for row in self.rows.values():
@@ -982,14 +1004,17 @@ class AppsPage:
         self.status.set_visible(True)
         self.loading = True
 
-        def work():
-            cache = inventory.open_apt_cache()
-            catalog = core.load_catalog()
+        def scan(cache, catalog):
             apps = inventory.list_all(cache, catalog, updates=False)
             removed = history.recent({a.key for a in apps}, cache, catalog)
             hub_pkgs = {pkg for a in catalog for pkg in [a.package, *a.replaces]}
-            self.win.system_upgrades = inventory.system_upgrades(
+            return apps, removed, inventory.system_upgrades(
                 cache, {a.id for a in apps if a.channel == "apt"} | hub_pkgs)
+
+        def work():
+            catalog = core.load_catalog()
+            apps, removed, self.win.system_upgrades = inventory.with_apt_cache(
+                lambda cache: scan(cache, catalog))
             if check_updates:
                 _idle(self.show, apps, removed, False)
                 inventory.apply_updates(apps, catalog)
@@ -1041,6 +1066,8 @@ class AppsPage:
         self.update_all_btn.set_visible(final and bool(ready or sysup))
         self.status.set_visible(False)
         self.loading = not final
+        if final:
+            release_memory_soon()
         self.win.inventory_ready(apps)
         self.apply_filter()
         self.update_selection()
@@ -1610,12 +1637,12 @@ class CleanerPage:
         self.box.append(self.status)
 
         def work():
-            cache = inventory.open_apt_cache()
             apps = list(self.win.installed.values()) if self.win.inventory_loaded else None
-            _idle(self.show, cleaner.scan(apps, cache))
+            _idle(self.show, inventory.with_apt_cache(lambda cache: cleaner.scan(apps, cache)))
         _thread(work)
 
     def show(self, groups):
+        release_memory_soon()
         self.scanned = True
         self.scan_btn.set_sensitive(True)
         self.groups = groups
@@ -1776,6 +1803,7 @@ class Window(Adw.ApplicationWindow):
         self.toasts.set_child(view)
         self.set_content(self.toasts)
         self.apps_page.load()
+        _thread(core.prune_downloads)
         self.update_disk()
         GLib.timeout_add_seconds(30, lambda: self.update_disk() or True)
 
@@ -2123,6 +2151,8 @@ class Window(Adw.ApplicationWindow):
             self.alert(f"{title} failed", tail or f"exit code {rc}")
         if done:
             done(rc)
+        core.clear_staging()
+        release_memory_soon()
         core.refresh_installed(self.home.apps)
         self.home.sync()
         self.library_page.after_job()
@@ -2401,6 +2431,7 @@ class Application(Adw.Application):
 
 
 def run(argv=None, page=None):
+    core.limit_malloc_arenas()
     app = Application()
     if page:
         # If App Hub is already running, ask it to show the page (run() then

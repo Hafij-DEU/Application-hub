@@ -12,6 +12,7 @@ import re
 import shutil
 import socket
 import subprocess
+import threading
 from dataclasses import dataclass, field
 
 import gi
@@ -108,6 +109,19 @@ def open_apt_cache():
         return apt.Cache()
     except Exception:  # python3-apt missing or cache broken
         return None
+
+
+_apt_lock = threading.Lock()
+
+
+def with_apt_cache(fn):
+    """fn(cache) with a fresh apt cache. An apt cache holds ~75 MB: only one is open at a time
+    (two pages loading wait for each other) and the memory is handed back afterwards."""
+    with _apt_lock:
+        try:
+            return fn(open_apt_cache())
+        finally:
+            core.release_memory()
 
 
 def _apt_source(version):

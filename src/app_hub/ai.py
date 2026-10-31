@@ -241,6 +241,8 @@ def find(query, log=lambda s: None):
             found.options.append(Option(recipe, ok, status, notes))
         found.options.sort(key=lambda o: not o.verified)
         apps.append(found)
+    cache = None
+    core.release_memory()
     return Answer(apps, sources, raw)
 
 
