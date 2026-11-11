@@ -98,12 +98,15 @@
       ]
     },
     {
-      "id": "memory-sweep",
-      "name": "Memory Sweep",
-      "summary": "See what fills your RAM, end it, and set up zram and swap",
-      "repo": "Hafij-DEU/memory-sweep",
-      "package": "memory-sweep",
-      "desktop": "io.github.hafij_bge.MemorySweep.desktop"
+      "id": "harbor",
+      "name": "Harbor Task Manager",
+      "summary": "Windows-style Task Manager: apps, performance, Memory Sweep, zram and swap",
+      "repo": "Hafij-DEU/harbor",
+      "package": "harbor",
+      "desktop": "io.github.hafij_deu.Harbor.TaskManager.desktop",
+      "replaces": [
+        "memory-sweep"
+      ]
     },
     {
       "id": "fusion-desk",
