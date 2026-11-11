@@ -99,11 +99,11 @@
     },
     {
       "id": "harbor",
-      "name": "Harbor Task Manager",
-      "summary": "Windows-style Task Manager: apps, performance, Memory Sweep, zram and swap",
+      "name": "Harbor",
+      "summary": "Windows 11-style Files (tabs, preview, 7-Zip) and Task Manager (performance, Memory Sweep, zram)",
       "repo": "Hafij-DEU/harbor",
       "package": "harbor",
-      "desktop": "io.github.hafij_deu.Harbor.TaskManager.desktop",
+      "desktop": "io.github.hafij_deu.Harbor.Files.desktop",
       "replaces": [
         "memory-sweep"
       ]
