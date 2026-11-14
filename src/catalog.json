@@ -98,6 +98,14 @@
       ]
     },
     {
+      "id": "sonar",
+      "name": "Sonar",
+      "summary": "Bangla and English voice typing: hold a shortcut, speak, the text appears",
+      "repo": "Hafij-DEU/sonar",
+      "package": "sonar",
+      "desktop": "Sonar.desktop"
+    },
+    {
       "id": "harbor-files",
       "name": "Harbor Files",
       "summary": "Windows 11-style file manager: tabs, preview, 7-Zip, network places, share over Wi-Fi",
