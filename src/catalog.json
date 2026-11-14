@@ -98,13 +98,27 @@
       ]
     },
     {
-      "id": "harbor",
-      "name": "Harbor",
-      "summary": "Windows 11-style Files (tabs, preview, 7-Zip) and Task Manager (performance, Memory Sweep, zram)",
+      "id": "harbor-files",
+      "name": "Harbor Files",
+      "summary": "Windows 11-style file manager: tabs, preview, 7-Zip, network places, share over Wi-Fi",
       "repo": "Hafij-DEU/harbor",
-      "package": "harbor",
+      "package": "harbor-files",
       "desktop": "io.github.hafij_deu.Harbor.Files.desktop",
+      "asset_pattern": "^harbor-files_.*\\.deb$",
       "replaces": [
+        "harbor"
+      ]
+    },
+    {
+      "id": "harbor-taskmgr",
+      "name": "Harbor Task Manager",
+      "summary": "Windows 11-style Task Manager: processes, performance, Memory Sweep, zram/swap",
+      "repo": "Hafij-DEU/harbor",
+      "package": "harbor-taskmgr",
+      "desktop": "io.github.hafij_deu.Harbor.TaskManager.desktop",
+      "asset_pattern": "^harbor-taskmgr_.*\\.deb$",
+      "replaces": [
+        "harbor",
         "memory-sweep"
       ]
     },

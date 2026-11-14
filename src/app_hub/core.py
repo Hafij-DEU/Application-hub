@@ -249,8 +249,8 @@ def refresh_installed(apps):
 
 
 def clean_version(v):
-    """Strip tag 'v', distro suffix (~ubuntu24.04) and Debian revision (-1)."""
-    v = v.strip()
+    """Strip tag prefix ('files-v'), 'v', distro suffix (~ubuntu24.04) and Debian revision (-1)."""
+    v = re.sub(r"^[A-Za-z][A-Za-z_]*(?:-[A-Za-z][A-Za-z_]*)*-(?=[vV]?\d)", "", v.strip())
     if v[:1] in "vV" and v[1:2].isdigit():
         v = v[1:]
     v = v.split("~", 1)[0]
@@ -474,7 +474,10 @@ def fetch_release(app):
             recent = []
         for r in recent if isinstance(recent, list) else []:
             if not r.get("draft") and not r.get("prerelease") and _pick(app, r.get("assets", [])):
-                skipped = data.get("tag_name", "")
+                # a repo with several apps: the newer tag belongs to another app
+                other_app = app.asset_pattern and not app.extension and pick_asset(
+                    data.get("assets", []))
+                skipped = "" if other_app else data.get("tag_name", "")
                 stale = data if isinstance(data, Stale) else None
                 data = r
                 if stale:
