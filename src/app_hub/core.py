@@ -469,15 +469,23 @@ def fetch_release(app):
         # The newest release may ship only other platforms (e.g. a Windows-only fix):
         # use the newest stable release that has a .deb for this system.
         try:
-            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=10")
+            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=30")
         except HubError:
             recent = []
+        # GitHub does not list releases newest first (harbor listed files-v0.5.10
+        # after files-v0.5.2), so take the highest version that has a .deb.
+        best = None
         for r in recent if isinstance(recent, list) else []:
-            if not r.get("draft") and not r.get("prerelease") and _pick(app, r.get("assets", [])):
-                # a repo with several apps: the newer tag belongs to another app
-                other_app = app.asset_pattern and not app.extension and pick_asset(
-                    data.get("assets", []))
-                skipped = "" if other_app else data.get("tag_name", "")
+            if (not r.get("draft") and not r.get("prerelease") and _pick(app, r.get("assets", []))
+                    and (best is None or is_newer(r.get("tag_name", ""), best.get("tag_name", "")))):
+                best = r
+        for r in [best] if best else []:
+                # A repo with several apps (asset_pattern set): the newer tag belongs to
+                # another app, e.g. an Android APK release. Flag only a newer version.
+                latest_tag = data.get("tag_name", "")
+                other_app = app.asset_pattern and not app.extension
+                skipped = ("" if other_app or not is_newer(latest_tag, r.get("tag_name", ""))
+                           else latest_tag)
                 stale = data if isinstance(data, Stale) else None
                 data = r
                 if stale:
