@@ -131,6 +131,15 @@
       ]
     },
     {
+      "id": "win11-settings",
+      "name": "Harbor Settings",
+      "summary": "Windows 11-style Settings for Ubuntu: display, sound, network, apps and updates in one place",
+      "repo": "Hafij-DEU/harbor",
+      "package": "win11-settings",
+      "desktop": "win11-settings.desktop",
+      "asset_pattern": "^win11-settings_.*_amd64\\.deb$"
+    },
+    {
       "id": "fusion-desk",
       "name": "Fusion Desk",
       "summary": "Taskbar, start menu and widgets in one panel",
