@@ -134,16 +134,28 @@ def remote_deb_control(url, limit=512 * 1024):
     if not head.startswith(b"!<arch>\n"):
         raise core.HubError("not a .deb package")
     pos = 8
-    while pos + 60 <= len(head):
-        name = head[pos:pos + 16].decode().strip().rstrip("/")
-        size = int(head[pos + 48:pos + 58].decode().strip())
+    for _ in range(64):  # a .deb has 3 members; never loop forever on a broken header
+        if pos + 60 > len(head):
+            break
+        try:
+            name = head[pos:pos + 16].decode().strip().rstrip("/")
+            size = int(head[pos + 48:pos + 58].decode().strip())
+        except (UnicodeDecodeError, ValueError):
+            raise core.HubError("not a valid .deb package") from None
+        if size < 0:
+            raise core.HubError("not a valid .deb package")
         body = head[pos + 60:pos + 60 + size]
         if name.startswith("control.tar"):
             if len(body) < size:
                 raise core.HubError("package header is unusually large")
-            with tarfile.open(fileobj=io.BytesIO(_decompress(name, body))) as tar:
-                member = next(m for m in tar.getmembers() if m.name.lstrip("./") == "control")
-                text = tar.extractfile(member).read().decode("utf-8", "replace")
+            try:
+                with tarfile.open(fileobj=io.BytesIO(_decompress(name, body))) as tar:
+                    member = next(m for m in tar.getmembers() if m.name.lstrip("./") == "control")
+                    text = tar.extractfile(member).read().decode("utf-8", "replace")
+            except core.HubError:
+                raise
+            except Exception:  # corrupt archive, no control member, bad compression…
+                raise core.HubError("package control data is damaged") from None
             fields, key = {}, None
             for line in text.splitlines():
                 if line[:1] in " \t" and key:

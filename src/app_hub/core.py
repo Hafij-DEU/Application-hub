@@ -6,6 +6,7 @@ through app-hub-helper via pkexec (see run_helper).
 
 import concurrent.futures
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -100,7 +101,7 @@ class App:
             return True
         if self.installed_alt and clean_version(self.installed_alt) == self.release.version:
             return False
-        return is_newer(self.release.version, self.installed)
+        return is_newer(self.release.tag or self.release.version, self.installed)
 
     @property
     def renamed(self):
@@ -248,18 +249,33 @@ def refresh_installed(apps):
                 break
 
 
-def clean_version(v):
-    """Strip tag prefix ('files-v'), 'v', distro suffix (~ubuntu24.04) and Debian revision (-1)."""
-    v = re.sub(r"^[A-Za-z][A-Za-z_]*(?:-[A-Za-z][A-Za-z_]*)*-(?=[vV]?\d)", "", v.strip())
+_PRE = r"(?:rc|alpha|beta|pre|preview|dev)"
+_REVISION = re.compile(r"-\d+(ubuntu\d*)?$")
+
+
+def clean_version(v, keep_revision=False):
+    """Strip tag prefix ('files-v'), 'v', distro suffix (~ubuntu24.04) and Debian revision (-1).
+    Pre-releases ('-rc1', '-beta.2', '~rc1') become Debian '~' versions so they sort
+    before the final release."""
+    v = re.sub(r"^[A-Za-z][A-Za-z_]*(?:-[A-Za-z][A-Za-z_]*)*-(?=[vV]?\d)", "", (v or "").strip())
     if v[:1] in "vV" and v[1:2].isdigit():
         v = v[1:]
-    v = v.split("~", 1)[0]
-    v = re.sub(r"-\d+(ubuntu\d*)?$", "", v)
+    # '1.0.0-rc1' / '1.0.0.beta.2' / '1.0.0rc1' -> '1.0.0~rc1'
+    v = re.sub(rf"(?<=\d)[-._]?(?={_PRE}(?![A-Za-z]))", "~", v, flags=re.I)
+    # drop '~' parts that are not pre-releases (distro suffix like ~ubuntu24.04, ~22.04)
+    v = re.sub(rf"~(?!{_PRE}(?![A-Za-z]))[^~]*", "", v, flags=re.I)
+    v = re.sub(rf"~({_PRE})", lambda m: "~" + m.group(1).lower(), v, flags=re.I)
+    if not keep_revision:
+        v = _REVISION.sub("", v)
     return v.replace("+", "-")
 
 
 def is_newer(latest, installed):
-    a, b = clean_version(latest), clean_version(installed)
+    a, b = clean_version(latest, True), clean_version(installed, True)
+    if not re.search(r"\d", a):
+        return False     # 'nightly', 'latest', '': no version to compare
+    if bool(_REVISION.search(a)) != bool(_REVISION.search(b)):
+        a, b = _REVISION.sub("", a), _REVISION.sub("", b)   # compare a revision only with one
     if a == b:
         return False
     return _run(["dpkg", "--compare-versions", a, "gt", b]).returncode == 0
@@ -329,7 +345,15 @@ _api_mem = None         # the cache file, read once per process
 
 def _slim_release(r, body=True):
     out = {k: r.get(k) for k in _RELEASE_KEYS if body or k != "body"}
-    out["assets"] = [{k: a.get(k) for k in _ASSET_KEYS} for a in r.get("assets") or []]
+    if not isinstance(out.get("tag_name"), str):
+        out["tag_name"] = ""
+    assets = r.get("assets")
+    # Keep only well-formed assets (a dict with a name and a download URL), so a broken
+    # answer or cache entry cannot crash the pickers.
+    out["assets"] = [{k: a.get(k) for k in _ASSET_KEYS} for a in
+                     (assets if isinstance(assets, list) else [])
+                     if isinstance(a, dict) and isinstance(a.get("name"), str)
+                     and isinstance(a.get("browser_download_url"), str)]
     return out
 
 
@@ -360,7 +384,8 @@ def _api_cache_load():
             cache = {}
         cutoff = time.time() - API_CACHE_DAYS * 86400
         _api_mem = {u: dict(e, data=_slim(e["data"])) for u, e in cache.items()
-                    if isinstance(e, dict) and "data" in e and (e.get("time") or 0) > cutoff}
+                    if isinstance(e, dict) and isinstance(e.get("data"), (dict, list))
+                    and isinstance(e.get("time"), (int, float)) and e["time"] > cutoff}
     return _api_mem
 
 
@@ -368,11 +393,14 @@ def _api_cache_store(url, etag, data):
     with _api_lock:
         cache = _api_cache_load()
         cache[url] = {"etag": etag, "data": data, "time": time.time()}
-        os.makedirs(CACHE_DIR, exist_ok=True)
         tmp = f"{API_CACHE}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(cache, f, separators=(",", ":"))
-        os.replace(tmp, API_CACHE)
+        try:  # best effort: an unwritable cache must not throw away a good answer
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(cache, f, separators=(",", ":"))
+            os.replace(tmp, API_CACHE)
+        except OSError:
+            _unlink(tmp)
 
 
 class Stale(dict):
@@ -388,17 +416,27 @@ def _stale(cached, reason):
     return out
 
 
-def _get_json(url):
+def _get_json(url, expect=None):
     """GET a GitHub API URL. Uses ETags: unchanged answers (304) don't count
-    against the rate limit, and the cached copy is used (marked Stale) when limited."""
+    against the rate limit, and the cached copy is used (marked Stale) when limited.
+    expect (dict or list): an answer of another shape counts as a failed fetch."""
     with _api_lock:
         cached = _api_cache_load().get(url)
+    if cached and expect and not isinstance(cached.get("data"), expect):
+        cached = None
     req = _request(url)
     if cached and cached.get("etag"):
         req.add_header("If-None-Match", cached["etag"])
     try:
         with urllib.request.urlopen(req, timeout=20) as resp:
-            data = _slim(json.load(resp))
+            try:
+                data = json.load(resp)
+            except (ValueError, http.client.HTTPException) as e:
+                # captive-portal HTML, truncated body, IncompleteRead: same as offline
+                raise OSError(f"bad answer from GitHub: {type(e).__name__}") from None
+            if expect and not isinstance(data, expect):
+                raise OSError("unexpected answer from GitHub")
+            data = _slim(data)
             _api_cache_store(url, resp.headers.get("ETag", ""), data)
             return data
     except urllib.error.HTTPError as e:
@@ -412,7 +450,7 @@ def _get_json(url):
                 return _stale(cached, "GitHub limit reached")
             raise HubError("GitHub limit reached, try again later or sign in (Preferences)") from None
         raise HubError(f"GitHub error {e.code}") from None
-    except (urllib.error.URLError, TimeoutError, OSError) as e:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as e:
         if cached:
             return _stale(cached, "offline")
         reason = getattr(e, "reason", e)
@@ -463,19 +501,21 @@ def _pick(app, assets):
 
 
 def fetch_release(app):
-    data = _get_json(f"{API}/repos/{app.repo}/releases/latest")
+    data = _get_json(f"{API}/repos/{app.repo}/releases/latest", dict)
     skipped = ""
     if not _pick(app, data.get("assets", [])):
         # The newest release may ship only other platforms (e.g. a Windows-only fix):
         # use the newest stable release that has a .deb for this system.
         try:
-            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=30")
+            recent = _get_json(f"{API}/repos/{app.repo}/releases?per_page=30", list)
         except HubError:
             recent = []
         # GitHub does not list releases newest first (harbor listed files-v0.5.10
         # after files-v0.5.2), so take the highest version that has a .deb.
         best = None
         for r in recent if isinstance(recent, list) else []:
+            if not isinstance(r, dict):
+                continue
             if (not r.get("draft") and not r.get("prerelease") and _pick(app, r.get("assets", []))
                     and (best is None or is_newer(r.get("tag_name", ""), best.get("tag_name", "")))):
                 best = r
@@ -524,7 +564,7 @@ def download_stats(app):
     Counts the .deb files (the .zip for extensions). GitHub counts every download,
     including the owner's own installs and updates."""
     try:
-        data = _get_json(f"{API}/repos/{app.repo}/releases?per_page=100")
+        data = _get_json(f"{API}/repos/{app.repo}/releases?per_page=100", list)
     except HubError:
         raise
     except Exception as e:  # e.g. a stale cache entry that is not a list
@@ -532,7 +572,7 @@ def download_stats(app):
     kind = ".zip" if app.extension else ".deb"
     out = []
     for r in data if isinstance(data, list) else []:
-        if r.get("draft"):
+        if not isinstance(r, dict) or r.get("draft"):
             continue
         n = sum(a.get("download_count", 0) for a in r.get("assets", [])
                 if a.get("name", "").lower().endswith(kind))
@@ -547,6 +587,8 @@ def check_all(apps, on_done=None):
             app.release, app.error = fetch_release(app), ""
         except HubError as e:
             app.release, app.error = None, str(e)
+        except Exception as e:  # never leave a card stuck on "checking…"
+            app.release, app.error = None, f"check failed ({type(e).__name__}: {e})"
         if app.release and app.release.extras and app.installed and not app.update_available:
             sync_browser_extensions(app)        # app up to date, extension copy behind: refresh it
         if on_done:
@@ -556,6 +598,9 @@ def check_all(apps, on_done=None):
 
 
 # --- download -------------------------------------------------------------
+
+_verified = {}   # path -> SHA-256 checked by download(); passed to the root helper
+
 
 def _expected_sha256(rel):
     if rel.sha256:
@@ -585,6 +630,7 @@ def download(app, progress=None, cancel: threading.Event | None = None):
     expected = _expected_sha256(rel)
 
     if os.path.exists(path) and expected and _sha256(path) == expected:
+        _verified[path] = expected
         if progress:
             progress(rel.size, rel.size)
         return path
@@ -620,6 +666,7 @@ def download(app, progress=None, cancel: threading.Event | None = None):
     os.replace(part, path)
     if app.extension:
         check_extension_zip(path, app.extension)
+    _verified[path] = digest.hexdigest()
     return path
 
 
@@ -986,8 +1033,16 @@ AUTH_CANCELLED = (126, 127)
 
 
 def install_plan(items):
-    """items: [(package, path)] -> helper plan installing those .deb files."""
-    return [["install-deb", *[x for pkg, path in items for x in (pkg, path)]]]
+    """items: [(package, path)] or [(package, path, sha256)] -> helper plan installing
+    those .deb files. The helper checks each root-owned copy against the SHA-256 (the
+    one verified at download time, else the file's hash now), so a same-user process
+    cannot swap the file between this point and pkexec."""
+    triples = []
+    for item in items:
+        pkg, path = item[0], item[1]
+        sha = (item[2] if len(item) > 2 else "") or _verified.get(path) or _sha256(path)
+        triples += [pkg, path, sha.lower()]
+    return [["install-deb-verified", *triples]]
 
 
 def helper_command(plan):

@@ -110,6 +110,93 @@ def installed_keys(apps):
     return keys
 
 
+BIN_DIRS = ("/usr/bin/", "/usr/sbin/", "/usr/games/", "/bin/", "/sbin/", "/usr/local/bin/")
+SHARE_DIRS = ("/usr/share/", "/usr/lib/", "/usr/libexec/", "/opt/")
+DESKTOP_DIRS = ["/usr/share/applications", "/usr/local/share/applications",
+                "/var/lib/flatpak/exports/share/applications", "/var/lib/snapd/desktop/applications",
+                os.path.join(HOME, ".local/share/applications"),
+                os.path.join(HOME, ".local/share/flatpak/exports/share/applications")]
+DPKG_INFO = "/var/lib/dpkg/info"
+
+
+def _stem(name):
+    name = os.path.basename(name.rstrip("/")).lower()
+    for ext in (".desktop", ".xml", ".png", ".svg", ".appimage", ".py", ".sh"):
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
+def installed_names(path_dirs=None, desktop_dirs=None, dpkg_info=None):
+    """Names of things installed on the system: binaries in PATH, .desktop file
+    names and their Exec commands, and the programs / data folders listed in
+    installed packages' file lists. Used to keep config folders of installed
+    software (e.g. ~/.config/gridcraft for /usr/bin/gridcraft-cli) off the
+    leftovers list."""
+    names = set()
+    if path_dirs is None:
+        path_dirs = os.environ.get("PATH", "/usr/bin:/bin").split(os.pathsep)
+    for d in path_dirs:
+        try:
+            names.update(n.lower() for n in os.listdir(d))
+        except OSError:
+            pass
+    for d in DESKTOP_DIRS if desktop_dirs is None else desktop_dirs:
+        for f in glob.glob(os.path.join(d, "*.desktop")):
+            names.add(_stem(f))
+            try:
+                with open(f, encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if line.startswith("Exec="):
+                            words = line[5:].split()
+                            # "env FOO=1 prog", "flatpak run id" etc.: keep every non-option word
+                            names.update(_stem(w) for w in words[:4]
+                                         if not w.startswith(("-", "%")) and "=" not in w)
+                            break
+            except OSError:
+                pass
+    for lst in glob.glob(os.path.join(DPKG_INFO if dpkg_info is None else dpkg_info, "*.list")):
+        try:
+            with open(lst, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line.startswith(BIN_DIRS) or "/applications/" in line or "/mime/packages/" in line:
+                        names.add(_stem(line))
+                    else:
+                        for root in SHARE_DIRS:
+                            if line.startswith(root):
+                                top = line[len(root):].split("/", 1)[0]
+                                if top:
+                                    names.add(_stem(top))
+                                break
+        except OSError:
+            pass
+    names.discard("")
+    return names
+
+
+def ownership(key, names, tokens=None):
+    """"owned" when an installed name clearly matches the folder key (equal, a
+    word of it, or key-prefixed like gridcraft-cli), "maybe" for a looser match
+    (key is a prefix / part of an installed name), else None."""
+    key = key.lower()
+    if tokens is None:
+        tokens = set()
+        for n in names:
+            tokens |= _tokens(n)
+    if key in names or key in tokens:
+        return "owned"
+    maybe = False
+    for n in names:
+        if n.startswith(key):
+            if n[len(key):len(key) + 1] in ("-", "_", ".", " "):
+                return "owned"
+            maybe = True
+        elif len(key) >= 4 and key in n:
+            maybe = True
+    return "maybe" if maybe else None
+
+
 def newest_mtime(path):
     newest = 0
     for root, dirs, files in os.walk(path, onerror=lambda e: None):
@@ -129,9 +216,13 @@ def residual_packages():
     return [line.split()[1] for line in out.splitlines() if line.startswith("rc")]
 
 
-def scan_leftovers(apps, removed):
+def scan_leftovers(apps, removed, names=None):
     """User folders that belong to apps no longer installed."""
     keep = installed_keys(apps)
+    names = installed_names() if names is None else names
+    name_tokens = set()
+    for n in names:
+        name_tokens |= _tokens(n)
     removed_at = {}  # key -> when the app was removed (0 = unknown)
     for r in removed:
         for k in _keys_for(r.id, r.name):
@@ -150,11 +241,17 @@ def scan_leftovers(apps, removed):
         return newest_mtime(path) > since
 
     items = []
+    unsure = set()  # listed, but not preselected
     candidates = [p for root in DATA_ROOTS for p in glob.glob(os.path.join(root, "*"))]
     candidates += [p for p in glob.glob(os.path.join(HOME, ".*")) if os.path.isdir(p)]
     for path in candidates:
         key = _norm(os.path.basename(path))
         if key in wanted and not still_used(path, key):
+            owner = ownership(key, names, name_tokens)
+            if owner == "owned":
+                continue  # something installed still ships this name
+            if owner == "maybe":
+                unsure.add(path)
             items.append(path)
 
     flatpaks = {a.id for a in apps if a.channel == "flatpak"}
@@ -166,7 +263,8 @@ def scan_leftovers(apps, removed):
         if os.path.basename(path) not in snaps:
             items.append(path)
 
-    return [Item(os.path.basename(p), p.replace(HOME, "~", 1), dir_size(p), path=p)
+    return [Item(os.path.basename(p), p.replace(HOME, "~", 1), dir_size(p), path=p,
+                 selected=p not in unsure)
             for p in sorted(set(items))]
 
 

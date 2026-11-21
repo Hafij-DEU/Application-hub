@@ -6,6 +6,8 @@
 PLAN is a JSON list of steps, run in order, stopping at the first failure:
 
   ["install-deb", PACKAGE_OR_EMPTY, "/path/file.deb", ...]  (PACKAGE, PATH pairs)
+  ["install-deb-verified", PACKAGE_OR_EMPTY, "/path/file.deb", SHA256, ...]
+      (PACKAGE, PATH, SHA256 triples) the root-owned copy must have that SHA-256
   ["apt-install", PKG, ...]      ["apt-upgrade", PKG, ...]
   ["apt-remove", PKG, ...]       ["apt-purge", PKG, ...]
   ["apt-autoremove"]             ["apt-clean"]
@@ -26,6 +28,7 @@ against a strict pattern so nothing can be passed as an option.
 """
 
 import ast
+import hashlib
 import json
 import os
 import re
@@ -56,11 +59,35 @@ UUID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*")
 SYSTEM_EXT_DIR = "/usr/share/gnome-shell/extensions"
 GDM_DCONF = "/usr/share/gdm/dconf/95-app-hub-extensions"
 GDM_GENERATE = "/usr/share/gdm/generate-config"
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def die(msg, code=2):
     print(f"app-hub-helper: {msg}", file=sys.stderr, flush=True)
     sys.exit(code)
+
+
+def need(op, args, n):
+    """Exactly n arguments for op, or die() with a message (no traceback)."""
+    if not isinstance(args, list) or len(args) != n:
+        die(f"{op} needs {n} argument{'s' if n != 1 else ''}, got {len(args) if isinstance(args, list) else 0}")
+    return args
+
+
+def dpkg_owner(path):
+    """Package that ships path (dpkg -S), or None when no package owns it."""
+    try:
+        r = subprocess.run(["dpkg-query", "-S", path], capture_output=True, text=True, env=ENV)
+    except OSError:
+        return None
+    if r.returncode != 0:
+        return None
+    for line in r.stdout.splitlines():
+        if line.startswith("diversion "):
+            return "diversion"
+        if ": " in line:
+            return line.split(": ", 1)[0]
+    return "unknown"
 
 
 def check(pattern, value, what):
@@ -174,6 +201,9 @@ class Runner:
     def remove_extension(self, uuid):
         check(UUID, uuid, "extension uuid")
         final = os.path.join(SYSTEM_EXT_DIR, uuid)
+        owner = dpkg_owner(final)
+        if owner:
+            die(f"extension {uuid} belongs to package {owner}; remove that package instead")
         print(f"+ rm -r {final}", flush=True)
         if self.simulate:
             return 0
@@ -205,15 +235,21 @@ class Runner:
         if os.access(GDM_GENERATE, os.X_OK):
             subprocess.call([GDM_GENERATE], env=ENV, stdin=subprocess.DEVNULL)
 
-    def stage(self, pkg, path):
+    def stage(self, pkg, path, sha256=None):
         if not isinstance(path, str) or not path.endswith(".deb") or not os.path.isfile(path):
             die(f"not a .deb file: {path!r}")
         self.tempdir()
         # Copy first, then check the copy, so the file cannot change after the check.
         dest = os.path.join(self.workdir, f"{len(os.listdir(self.workdir))}.deb")
+        digest = hashlib.sha256()
         with open(path, "rb") as src, open(dest, "xb") as out:
-            shutil.copyfileobj(src, out)
+            for chunk in iter(lambda: src.read(1024 * 1024), b""):
+                digest.update(chunk)
+                out.write(chunk)
         os.chmod(dest, 0o644)
+        # The checksum is of the root-owned copy, so a swap of the user's file is caught.
+        if sha256 is not None and digest.hexdigest() != sha256:
+            die(f"{os.path.basename(path)} does not match its verified checksum, refusing to install")
         r = subprocess.run(["dpkg-deb", "-f", dest, "Package"], capture_output=True, text=True, env=ENV)
         if r.returncode != 0:
             die(f"{os.path.basename(path)} is not a valid .deb")
@@ -230,6 +266,16 @@ class Runner:
                 if pkg:
                     check(PKG, pkg, "package")
                 files.append(self.stage(pkg, path))
+            return self.run(APT + ["install", *files], apt=True)
+        if op == "install-deb-verified":
+            if len(args) % 3 or not args:
+                die("install-deb-verified needs PACKAGE, PATH, SHA256 triples")
+            files = []
+            for pkg, path, sha in zip(args[::3], args[1::3], args[2::3]):
+                if pkg:
+                    check(PKG, pkg, "package")
+                check(SHA256, sha, "sha256")
+                files.append(self.stage(pkg, path, sha))
             return self.run(APT + ["install", *files], apt=True)
         if op in ("apt-install", "apt-upgrade", "apt-remove", "apt-purge"):
             if not args:
@@ -261,7 +307,8 @@ class Runner:
                 cmd.append("--classic")
             return self.run(cmd)
         if op == "snap-refresh":
-            return self.run(["snap", "refresh", check(SNAP, args[0], "snap")])
+            (name,) = need(op, args, 1)
+            return self.run(["snap", "refresh", check(SNAP, name, "snap")])
         if op == "snap-remove":
             name, rev, purge = args
             cmd = ["snap", "remove", check(SNAP, name, "snap")]
@@ -275,8 +322,9 @@ class Runner:
             return self.flatpak(["flatpak", "install", "--system", "-y", "--noninteractive",
                                  check(REMOTE, remote, "remote"), check(REF, ref, "ref")], ref, True)
         if op == "flatpak-update":
+            (ref,) = need(op, args, 1)
             return self.flatpak(["flatpak", "update", "--system", "-y", "--noninteractive",
-                                 check(REF, args[0], "ref")])
+                                 check(REF, ref, "ref")])
         if op == "flatpak-uninstall":
             ref, data = args
             cmd = ["flatpak", "uninstall", "--system", "-y", "--noninteractive"]
@@ -317,7 +365,7 @@ def main(argv):
         for op, *args in plan:
             try:
                 rc = runner.step(op, args)
-            except ValueError:
+            except (ValueError, IndexError, TypeError):
                 die(f"wrong arguments for {op}")
             if rc != 0:
                 print(f"app-hub-helper: step {op} {' '.join(args)[:80]} failed (exit {rc})",

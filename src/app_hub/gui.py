@@ -421,7 +421,13 @@ class HubSection:
             app.release, app.error = None, ""
         self.sync()
         def check():
-            core.check_all(self.apps, lambda app: _idle(self.sync))
+            try:
+                core.check_all(self.apps, lambda app: _idle(self.sync))
+            except Exception as e:  # never leave cards stuck on "checking…"
+                for app in self.apps:
+                    if app.release is None and not app.error:
+                        app.error = f"check failed ({type(e).__name__}: {e})"
+                _idle(self.sync)
             _idle(release_memory_soon)
         _thread(check)
 
@@ -781,9 +787,9 @@ class AddAppDialog(Adw.Dialog):
         self.set_status("Looking…", True)
 
         def work():
-            known = library.known_repos()
             items, notes = [], []
             try:
+                known = library.known_repos()
                 if owner and repo:
                     targets = [(f"{owner}/{repo}", "", "")]
                 elif owner:
@@ -793,8 +799,9 @@ class AddAppDialog(Adw.Dialog):
                     _idle(self.set_status, "Asking Gemini…", True)
                     targets = [(s["repo"], s.get("name", ""), s.get("summary", ""))
                                for s in ai.suggest_repos(text)]
-            except core.HubError as e:
-                _idle(self.done, [], [str(e)])
+            except Exception as e:  # HubError, or anything else: show it, don't hang on "Looking…"
+                _idle(self.done, [], [str(e) if isinstance(e, core.HubError)
+                                      else f"search failed ({type(e).__name__}: {e})"])
                 return
             for i, (full, name, summary) in enumerate(targets, 1):
                 if full.lower() in known:
@@ -803,7 +810,7 @@ class AddAppDialog(Adw.Dialog):
                 _idle(self.set_status, f"Checking {full} ({i}/{len(targets)})…", True)
                 try:
                     items.append(library.resolve_repo(full, name, summary))
-                except (core.HubError, KeyError) as e:
+                except Exception as e:  # HubError, KeyError, a malformed answer…
                     if owner and not repo:
                         continue  # most repos of an account have no .deb; don't list them all
                     notes.append(f"{full}: {e}")
@@ -842,9 +849,20 @@ class AddAppDialog(Adw.Dialog):
         self.set_status("Adding…", True)
 
         def work():
-            for e in entries:
-                library.add(library.finish_entry(dict(e), self.section))
+            try:
+                for e in entries:
+                    library.add(library.finish_entry(dict(e), self.section))
+            except Exception as e:
+                _idle(failed, e)
+                return
             _idle(finished)
+
+        def failed(e):
+            for r in rows:
+                r.add_btn.set_sensitive(True)
+                r.add_btn.set_label("Add")
+            self.set_status(f"Could not add: {e}")
+            self.page.reload()
 
         def finished():
             for r in rows:

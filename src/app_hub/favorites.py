@@ -239,15 +239,38 @@ def install_actions(recipe, catalog=None):
                                    f"appimage-{os.path.basename(dest)[:-9].lower()}.desktop")
             os.makedirs(os.path.dirname(desktop), exist_ok=True)
             with open(desktop, "w", encoding="utf-8") as f:
-                f.write("[Desktop Entry]\nType=Application\n"
-                        f"Name={recipe.name}\nComment={recipe.summary}\n"
-                        f'Exec="{dest}" %U\nIcon=application-x-executable\nTerminal=false\n'
-                        "Categories=Utility;\n")
+                f.write(appimage_desktop_entry(recipe.name, recipe.summary, dest))
             log(f"installed {dest}")
             return 0
         return [], [], fetch_appimage
 
     raise core.HubError(f"unknown install channel: {ch}")
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f]+")
+
+
+def desktop_string(text):
+    """A Desktop Entry string value: control characters (newlines included)
+    become spaces, then backslash escapes per the spec, so text from the web
+    (e.g. an AI-written name/summary) cannot add keys such as Exec=."""
+    text = _CONTROL.sub(" ", str(text or "")).strip()
+    return text.replace("\\", "\\\\")
+
+
+def desktop_exec_arg(path):
+    """One quoted Exec argument (spec: escape " ` $ \\ inside quotes, then the
+    string-level backslash escape)."""
+    path = _CONTROL.sub("", str(path))
+    quoted = re.sub(r'(["`$\\])', r"\\\1", path)
+    return '"' + quoted.replace("\\", "\\\\") + '"'
+
+
+def appimage_desktop_entry(name, summary, dest):
+    return ("[Desktop Entry]\nType=Application\n"
+            f"Name={desktop_string(name) or 'AppImage'}\nComment={desktop_string(summary)}\n"
+            f"Exec={desktop_exec_arg(dest)} %U\nIcon=application-x-executable\nTerminal=false\n"
+            "Categories=Utility;\n")
 
 
 def run_install(recipe, log, catalog=None):
