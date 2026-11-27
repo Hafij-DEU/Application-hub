@@ -1626,7 +1626,8 @@ class CleanerPage:
         self.win = win
         self.groups, self.enabled = [], {}
         intro = Gtk.Label(wrap=True, xalign=0, hexpand=True, label=(
-            "Finds what uninstalled apps left behind. Your files are moved to the Trash, "
+            "Finds what uninstalled apps left behind, plus a deep clean for each browser "
+            "(every row lists the folders it deletes). Your files are moved to the Trash, "
             "so you can restore them. System items need your password."))
         intro.add_css_class("dim-label")
         top = Gtk.Box(spacing=8)
@@ -1734,7 +1735,9 @@ class CleanerPage:
         lines = []
         for g in self.groups:
             n = sum(i.selected for i in g.items) if g.granular else (len(g.items) if self.enabled.get(g.id) else 0)
-            if n:
+            if n and g.action == "browser":
+                lines.append(f"• {g.title}: " + ", ".join(i.label for i in g.items if i.selected))
+            elif n:
                 lines.append(f"• {g.title}: {n}")
         dialog = Adw.AlertDialog(heading="Clean these leftovers?", body="\n".join(lines))
         dialog.add_response("cancel", "Cancel")

@@ -18,7 +18,7 @@ import gi
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib  # noqa: E402
 
-from . import core, history, inventory  # noqa: E402
+from . import browser_clean, core, history, inventory  # noqa: E402
 
 HOME = inventory.HOME
 DATA_ROOTS = [os.path.join(HOME, d) for d in (".config", ".local/share", ".cache", ".local/state")]
@@ -41,6 +41,8 @@ class Item:
     selected: bool = True
     path: str = ""           # trash / delete target
     step: list = None        # root plan step for this item
+    paths: list = None       # browser deep clean: everything this row deletes
+    procs: list = None       # browser deep clean: browser processes
 
 
 @dataclass
@@ -50,7 +52,7 @@ class Group:
     description: str
     items: list = field(default_factory=list)
     granular: bool = True    # items can be picked one by one
-    action: str = ""         # trash | delete | root
+    action: str = ""         # trash | delete | root | browser
     root_plan: list = None   # whole-group root plan when not granular
     user_cmds: list = None   # whole-group user commands
     note: str = ""
@@ -368,10 +370,29 @@ def scan(apps=None, cache=None, removed=None):
                         "Download cache and AppImages kept for reinstalling. Deleted permanently.",
                         hub_items, action="delete"))
 
+    groups += scan_browsers()
+
     for g in groups:
         if g.items and not g.granular:
             for i in g.items:
                 i.selected = True
+    return groups
+
+
+def scan_browsers():
+    """One group per installed browser; each row names what it deletes."""
+    try:
+        found = browser_clean.scan()
+    except Exception:
+        return []
+    groups = []
+    for b in found:
+        items = [Item(i["label"], f"{i['detail']}\nDeletes: " + i["path"].replace("\n", "\n            "),
+                      i["size"], selected=i["selected"], paths=i["paths"], procs=i["procs"])
+                 for i in b["items"]]
+        desc = b["description"] + (f"\n{b['note']}" if b["note"] else "")
+        groups.append(Group("browser-" + b["browser"].lower().replace(" ", "-"), b["title"],
+                            desc, items, action="browser"))
     return groups
 
 
@@ -387,7 +408,7 @@ def selected_size(groups, enabled):
 
 def clean_actions(groups, enabled):
     """(root_plan, user_cmds, local_fn) for the selected items."""
-    root, user, trash, delete = [], [], [], []
+    root, user, trash, delete, browsers = [], [], [], [], []
     for g in groups:
         if g.granular:
             picked = [i for i in g.items if i.selected]
@@ -395,6 +416,9 @@ def clean_actions(groups, enabled):
                 trash += [i.path for i in picked]
             elif g.action == "delete":
                 delete += [i.path for i in picked]
+            elif g.action == "browser":
+                browsers += [{"label": f"{g.title} · {i.label}", "paths": i.paths, "procs": i.procs}
+                             for i in picked]
             else:
                 root.append([s for i in picked for s in [i.step]])
         elif enabled.get(g.id) and g.items:
@@ -418,8 +442,10 @@ def clean_actions(groups, enabled):
                 os.unlink(path)
             log(f"deleted {path}")
             history_forget_stored(path)
+        if browsers:
+            failed += browser_clean.delete(browsers, log)
         return 1 if failed and not (plan or user) else 0
-    return plan, user, (local if trash or delete else None)
+    return plan, user, (local if trash or delete or browsers else None)
 
 
 def history_forget_stored(path):
