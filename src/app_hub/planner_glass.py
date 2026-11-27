@@ -170,40 +170,52 @@ def is_planner(spec):
 
 # ---- PLANNER tokens and CSS -------------------------------------------------
 
-# Palette v2 ("Planner Mist"): one violet-indigo hue family. The backdrop is a
-# low-chroma mist so white cards read clean; neutral buttons are indigo-tinted
-# instead of grey; text is indigo-tinted ink. Dark = deep ink-violet.
+# Palette v3 ("Planner Glass"): one violet-indigo hue family like the Daily
+# Routine Planner app. A soft lavender -> periwinkle backdrop with enough
+# colour for glass to read; cards are real glass on it: translucent white
+# (dark: smoky violet) with a top-to-bottom sheen, a white rim, a bright top
+# edge and a soft coloured shadow. Header = near-solid bar; footer = floating
+# glass card.
 ACCENT = "linear-gradient(135deg, #6366f1, #8b5cf6)"
-ACCENT_SHADOW = "0 8px 16px -6px rgba(99,102,241,0.45)"
-CARD_SHADOW = "0 1px 2px rgba(49,46,129,0.06), 0 6px 16px -8px rgba(49,46,129,0.12)"
-LG_SHADOW = "0 12px 24px -10px rgba(49,46,129,0.22)"
+ACCENT_SHADOW = "0 8px 18px -6px rgba(99,102,241,0.50)"
+CARD_SHADOW = "0 10px 24px -12px rgba(76,61,180,0.30), 0 2px 6px -2px rgba(76,61,180,0.10)"
+LG_SHADOW = "0 16px 32px -14px rgba(76,61,180,0.38)"
 
 
 def tokens(dark, see_through=False, opacity=100):
     a = max(0.35, opacity / 100) if see_through else 1.0
     if dark:
-        stops = ((19, 17, 31), (23, 20, 48), (29, 25, 58))
-        t = dict(card="rgba(31,28,51,%.2f)" % (0.86 if see_through else 1),
-                 card_solid="#221f38", bar="rgba(28,25,48,%.2f)" % (0.92 if see_through else 1),
-                 view="rgba(19,17,31,0.40)", sidebar="rgba(19,17,31,0.45)",
-                 field="#29263f", popover="#24213a", rim="rgba(196,181,253,0.12)",
-                 hair="#2c2945", line="rgba(196,181,253,0.18)",
-                 text="#ecebf7", soft="#a9a6c4", faint="#6f6c8c", accent_text="#a5b4fc",
-                 btn="rgba(139,128,249,0.16)", btn_hover="rgba(139,128,249,0.26)",
-                 btn_text="#d4d0ff", btn_line="rgba(167,139,250,0.22)", hover="rgba(196,181,253,0.08)",
-                 sel="rgba(129,140,248,0.22)")
+        stops = ((26, 21, 51), (27, 31, 69), (20, 26, 58))
+        t = dict(card="rgba(40,35,76,0.55)",
+                 card_img="linear-gradient(to bottom, rgba(255,255,255,0.10), rgba(255,255,255,0.03))",
+                 card_solid="#221e3d", bar="rgba(24,21,48,%.2f)" % (0.80 if see_through else 0.92),
+                 view="rgba(20,17,40,0.30)", sidebar="rgba(20,17,40,0.40)",
+                 field="rgba(255,255,255,0.06)", popover="#221e3d",
+                 rim="rgba(255,255,255,0.13)", spec="inset 0 1px rgba(255,255,255,0.16)",
+                 hair="rgba(255,255,255,0.07)", line="rgba(255,255,255,0.14)",
+                 text="#eeedf9", soft="#aaa7c8", faint="#75729a", accent_text="#a5b4fc",
+                 btn="rgba(255,255,255,0.08)", btn_hover="rgba(255,255,255,0.14)",
+                 btn_text="#d4d0ff", btn_line="rgba(255,255,255,0.14)",
+                 hover="rgba(255,255,255,0.06)", sel="rgba(129,140,248,0.24)",
+                 shadow="0 12px 28px -12px rgba(0,0,0,0.55)")
     else:
-        stops = ((246, 244, 255), (238, 240, 255), (232, 236, 254))
-        t = dict(card="rgba(255,255,255,%.2f)" % (0.90 if see_through else 1),
-                 card_solid="#ffffff", bar="rgba(255,255,255,%.2f)" % (0.92 if see_through else 1),
-                 view="rgba(255,255,255,0.45)", sidebar="rgba(255,255,255,0.55)",
-                 field="#f7f6fd", popover="#ffffff", rim="#e6e3f6",
-                 hair="#ece9f8", line="#dcd8f0",
-                 text="#1e1b3a", soft="#5f5b7a", faint="#9a97b3", accent_text="#4f46e5",
-                 btn="#e9e6ff", btn_hover="#dedaff", btn_text="#4338ca", btn_line="#d9d4fb",
-                 hover="rgba(99,102,241,0.07)", sel="rgba(99,102,241,0.12)")
-    t["backdrop"] = "linear-gradient(160deg, %s)" % ", ".join(
+        stops = ((232, 218, 255), (220, 224, 255), (203, 220, 255))
+        t = dict(card="rgba(255,255,255,0.30)",
+                 card_img="linear-gradient(to bottom, rgba(255,255,255,0.72), rgba(255,255,255,0.40))",
+                 card_solid="#ffffff", bar="rgba(255,255,255,%.2f)" % (0.78 if see_through else 0.90),
+                 view="rgba(255,255,255,0.25)", sidebar="rgba(255,255,255,0.35)",
+                 field="rgba(255,255,255,0.55)", popover="#ffffff",
+                 rim="rgba(255,255,255,0.85)", spec="inset 0 1px rgba(255,255,255,0.95)",
+                 hair="rgba(99,102,241,0.10)", line="rgba(255,255,255,0.90)",
+                 text="#1e1b3a", soft="#5b5778", faint="#8f8bab", accent_text="#4f46e5",
+                 btn="rgba(255,255,255,0.50)", btn_hover="rgba(255,255,255,0.80)",
+                 btn_text="#4338ca", btn_line="rgba(255,255,255,0.90)",
+                 hover="rgba(255,255,255,0.45)", sel="rgba(99,102,241,0.14)",
+                 shadow=CARD_SHADOW)
+    t["backdrop"] = "linear-gradient(150deg, %s)" % ", ".join(
         "rgba(%d,%d,%d,%.2f)" % (*c, a) for c in stops)
+    t["glass"] = "background-color: %s; background-image: %s; border: 1px solid %s; box-shadow: %s, %s;" % (
+        t["card"], t["card_img"], t["rim"], t["spec"], t["shadow"])
     return t
 
 
@@ -224,10 +236,10 @@ def css_gtk4(dark, see_through=False, opacity=100):
 window.background, window.background > contents {{ background-color: transparent; }}
 window.background {{ background-image: {t["backdrop"]}; }}
 window.dialog, window.messagedialog, dialog-host > dialog > sheet, popover > contents {{ background-image: none; }}
-.card, .boxed-list, list.boxed-list, .app-card {{ border-radius: 16px; border: 1px solid {t["rim"]};
-  box-shadow: {CARD_SHADOW}; }}
+.card, .boxed-list, list.boxed-list, .app-card {{ border-radius: 16px; {t["glass"]} }}
+list.boxed-list > row, .boxed-list > row {{ background-color: transparent; }}
 button:not(.flat):not(.suggested-action):not(.destructive-action):not(.osd):not(.image-button):not(.toggle) {{
-  background-color: {t["btn"]}; color: {t["btn_text"]}; box-shadow: inset 0 0 0 1px {t["btn_line"]}; }}
+  background-color: {t["btn"]}; color: {t["btn_text"]}; box-shadow: inset 0 0 0 1px {t["btn_line"]}, {t["spec"]}; }}
 button:not(.flat):not(.suggested-action):not(.destructive-action):not(.osd):not(.image-button):not(.toggle):hover {{
   background-color: {t["btn_hover"]}; }}
 .dim-label, .caption, .subtitle {{ color: {t["soft"]}; }}
@@ -244,9 +256,7 @@ entry, spinbutton, searchentry, dropdown > button, combobox > box > button {{ bo
 entry:focus-within, searchentry:focus-within {{ box-shadow: 0 0 0 2px #6366f1; }}
 /* header: solid surface anchored to the top; footer: floating rounded card */
 headerbar {{ background-color: {t["bar"]}; box-shadow: 0 1px {t["hair"]}, 0 6px 14px -10px rgba(49,46,129,{0.5 if dark else 0.25}); }}
-toolbarview > .bottom-bar, actionbar > revealer > box {{ background-color: {t["card"]};
-  margin: 0 12px 12px; border-radius: 16px; border: 1px solid {t["rim"]}; box-shadow: {LG_SHADOW}; }}
-toolbarview > .bottom-bar.raised, toolbarview > .bottom-bar.border {{ box-shadow: {LG_SHADOW}; }}
+toolbarview > .bottom-bar, actionbar > revealer > box {{ margin: 0 12px 12px; border-radius: 16px; {t["glass"]} }}
 actionbar {{ background-color: transparent; border: none; box-shadow: none; }}
 row:selected, .navigation-sidebar > row:selected {{ background-color: {t["sel"]}; background-image: none; }}
 progressbar > trough > progress, scale > trough > highlight {{ background-image: linear-gradient(to right, #6366f1, #8b5cf6); }}
@@ -267,10 +277,10 @@ headerbar, .titlebar {{ background-color: {t["card_solid"]}; border: none; backg
   box-shadow: inset 0 -1px {t["hair"]}; color: {t["text"]}; }}
 headerbar label, .titlebar label {{ color: {t["text"]}; }}
 frame > border, .frame {{ border-radius: 16px; border: 1px solid {t["rim"]}; }}
-box.card, .card, list, listbox {{ background-color: {t["card"]}; border-radius: 16px; }}
+box.card, .card, list, listbox, frame > border {{ border-radius: 16px; {t["glass"]} }}
 /* GTK3 has no light/dark switch for us: paint every control so any base theme works */
 button {{ border-radius: 12px; background-color: {t["btn"]}; background-image: none;
-  border: 1px solid {t["btn_line"]}; color: {t["btn_text"]}; box-shadow: none; text-shadow: none;
+  border: 1px solid {t["btn_line"]}; color: {t["btn_text"]}; box-shadow: {t["spec"]}; text-shadow: none;
   -gtk-icon-shadow: none; }}
 button label, button image {{ color: {t["btn_text"]}; }}
 button:hover {{ background-color: {t["btn_hover"]}; }}
@@ -279,8 +289,7 @@ button:disabled, button:disabled label {{ color: {t["faint"]}; }}
 combobox button, combobox button label {{ background-color: {t["field"]}; color: {t["text"]};
   border: 1px solid {t["line"]}; }}
 headerbar button, .titlebar button {{ background-color: transparent; border-color: transparent; }}
-actionbar > revealer > box {{ background-color: {t["card"]}; margin: 0 12px 12px; border-radius: 16px;
-  border: 1px solid {t["rim"]}; }}
+actionbar > revealer > box {{ margin: 0 12px 12px; border-radius: 16px; {t["glass"]} }}
 headerbar button:hover, .titlebar button:hover {{ background-color: {t["hover"]}; }}
 button.suggested-action, button.default {{ background-image: {ACCENT}; color: #ffffff;
   border: 1px solid rgba(255,255,255,0.20); box-shadow: {ACCENT_SHADOW}; }}
