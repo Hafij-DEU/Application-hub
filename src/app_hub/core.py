@@ -1070,6 +1070,22 @@ def run_helper(plan, on_line=None):
     return run_command(helper_command(plan), on_line)
 
 
+def in_own_scope(cmd, app_id):
+    """Prefix cmd so the app starts in its own systemd scope instead of App Hub's.
+
+    GLib moves a launched app into a scope only after it has started, so child
+    processes it forks right away (Electron zygotes, GPU process) stay in App
+    Hub's scope and system monitors count their memory as App Hub's.
+    """
+    if not shutil.which("systemd-run") or not os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
+        return cmd
+    name = "".join(c if c.isascii() and (c.isalnum() or c in ":_.") else
+                   "".join(f"\\x{b:02x}" for b in c.encode()) for c in app_id or "app")
+    unit = f"app-gnome-{name}-{os.getpid()}{time.monotonic_ns() % 100000}.scope"
+    return ["systemd-run", "--user", "--scope", "--collect", "--quiet",
+            "--slice=app.slice", f"--unit={unit}", "--", *cmd]
+
+
 def launch(app):
     if app.extension:
         return open_extension(app)
@@ -1077,7 +1093,8 @@ def launch(app):
     names += [os.path.basename(p) for p in _package_desktop_files(app.installed_as or app.package)]
     for name in names:
         if name and shutil.which("gtk-launch"):
-            if subprocess.run(["gtk-launch", name.removesuffix(".desktop")],
+            desktop_id = name.removesuffix(".desktop")
+            if subprocess.run(in_own_scope(["gtk-launch", desktop_id], desktop_id),
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
                 return
     raise HubError(f"could not find a launcher for {app.name}")

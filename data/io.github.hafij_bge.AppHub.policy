@@ -3,7 +3,7 @@
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
 <policyconfig>
   <vendor>App Hub</vendor>
-  <vendor_url>https://github.com/Hafij-DEU/Application-hub</vendor_url>
+  <vendor_url>https://github.com/Hafij-BGE</vendor_url>
   <icon_name>io.github.hafij_bge.AppHub</icon_name>
   <action id="io.github.hafij_bge.AppHub.manage">
     <description>Install, update or uninstall apps</description>

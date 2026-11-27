@@ -1,6 +1,8 @@
 """GTK 4 / libadwaita window: My Apps, Updates, Library, All Apps, AI Install and Cleaner tabs."""
 
 import os
+import shutil
+import subprocess
 import sys
 import threading
 
@@ -141,6 +143,23 @@ def launch_desktop(path, fallback_app=None):
         info = Gio.DesktopAppInfo.new_from_filename(path) if path else None
     except TypeError:
         info = None
+    if info and shutil.which("gio"):
+        env = dict(os.environ)
+        try:
+            token = Gdk.Display.get_default().get_app_launch_context().get_startup_notify_id(info, [])
+        except (AttributeError, GLib.Error):
+            token = None
+        if token:
+            env["XDG_ACTIVATION_TOKEN"] = env["DESKTOP_STARTUP_ID"] = token
+        app_id = (info.get_id() or os.path.basename(path)).removesuffix(".desktop")
+        try:
+            proc = subprocess.Popen(core.in_own_scope(["gio", "launch", path], app_id), env=env,
+                                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL)
+            GLib.child_watch_add(GLib.PRIORITY_DEFAULT, proc.pid, lambda *_: None)
+            return True
+        except OSError:
+            pass
     if info:
         try:
             if info.launch([], None):
@@ -1626,7 +1645,8 @@ class CleanerPage:
         self.win = win
         self.groups, self.enabled = [], {}
         intro = Gtk.Label(wrap=True, xalign=0, hexpand=True, label=(
-            "Finds what uninstalled apps left behind. Your files are moved to the Trash, "
+            "Finds what uninstalled apps left behind, plus a deep clean for each browser "
+            "(every row lists the folders it deletes). Your files are moved to the Trash, "
             "so you can restore them. System items need your password."))
         intro.add_css_class("dim-label")
         top = Gtk.Box(spacing=8)
@@ -1734,7 +1754,9 @@ class CleanerPage:
         lines = []
         for g in self.groups:
             n = sum(i.selected for i in g.items) if g.granular else (len(g.items) if self.enabled.get(g.id) else 0)
-            if n:
+            if n and g.action == "browser":
+                lines.append(f"• {g.title}: " + ", ".join(i.label for i in g.items if i.selected))
+            elif n:
                 lines.append(f"• {g.title}: {n}")
         dialog = Adw.AlertDialog(heading="Clean these leftovers?", body="\n".join(lines))
         dialog.add_response("cancel", "Cancel")
