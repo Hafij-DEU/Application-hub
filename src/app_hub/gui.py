@@ -13,6 +13,7 @@ gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, GObject, Gtk, Pango  # noqa: E402
 
 from . import APP_ID, __version__, ai, cleaner, core, favorites, history, inventory, library, updates  # noqa: E402
+from . import planner_glass  # noqa: E402
 
 ICON_DIR = os.path.join(core.LIB_DIR, "icons")
 CSS = """
@@ -1792,6 +1793,14 @@ class Window(Adw.ApplicationWindow):
         provider.load_from_string(CSS)
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), provider,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+        # PLANNER glass look: follows Harbor Settings (~/.config/harbor/glass-apphub)
+        # or this app's own choice in Preferences; switches live.
+        self.look_provider = Gtk.CssProvider()
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), self.look_provider,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
+        self.look = planner_glass.Look("apphub", self.apply_look)
+        Adw.StyleManager.get_default().connect("notify::dark", lambda *_: self.apply_look())
+        self.apply_look()
 
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
@@ -1911,10 +1920,24 @@ class Window(Adw.ApplicationWindow):
         dialog = Adw.Dialog(title="Activity Log", content_width=760, content_height=480, child=tv)
         dialog.present(self)
 
+    def apply_look(self):
+        dark = Adw.StyleManager.get_default().get_dark()
+        self.look_provider.load_from_string(self.look.css_gtk4(dark))
+
     def show_preferences(self):
         settings = ai.load_settings()
         dialog = Adw.PreferencesDialog(title="Preferences")
         page = Adw.PreferencesPage()
+        look_group = Adw.PreferencesGroup(
+            title="Appearance",
+            description="Glass (Planner) is the Daily Routine Planner look. "
+                        "Follow uses the glass chosen in Harbor Settings › Personalisation.")
+        keys = [k for k, _ in planner_glass.CHOICES]
+        look_row = Adw.ComboRow(title="Look", model=Gtk.StringList.new([v for _, v in planner_glass.CHOICES]))
+        look_row.set_selected(keys.index(self.look.choice()))
+        look_row.connect("notify::selected", lambda r, _p: self.look.set_choice(keys[r.get_selected()]))
+        look_group.add(look_row)
+        page.add(look_group)
         group = Adw.PreferencesGroup(
             title="AI Install (Gemini)",
             description="The key is saved in ~/.config/app-hub/settings.json, readable only by you. "
