@@ -1930,7 +1930,7 @@ class Window(Adw.ApplicationWindow):
         page = Adw.PreferencesPage()
         look_group = Adw.PreferencesGroup(
             title="Appearance",
-            description="Glass (Planner) is the Daily Routine Planner look. "
+            description="Lumina Glass is a violet glass look. "
                         "Follow uses the glass chosen in Harbor Settings › Personalisation.")
         keys = [k for k, _ in planner_glass.CHOICES]
         look_row = Adw.ComboRow(title="Look", model=Gtk.StringList.new([v for _, v in planner_glass.CHOICES]))

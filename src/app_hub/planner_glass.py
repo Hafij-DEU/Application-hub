@@ -30,7 +30,7 @@ DEFAULT = {"effect": "STRONG", "material": "GLASS", "style": "FROSTED", "opacity
            **{k: 100 for k in STRENGTHS}}
 OFF = dict(DEFAULT, effect="OFF", opacity=100)
 PLANNER_SPEC = dict(DEFAULT, style="PLANNER", opacity=100, glare=False, shadow=True)
-CHOICES = (("follow", "Follow Harbor Settings"), ("planner", "Glass (Planner)"),
+CHOICES = (("follow", "Follow Harbor Settings"), ("planner", "Lumina Glass"),
            ("normal", "Normal"))
 
 
