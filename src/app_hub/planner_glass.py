@@ -171,7 +171,7 @@ def is_planner(spec):
 # ---- PLANNER tokens and CSS -------------------------------------------------
 
 # Palette v3 ("Planner Glass"): one violet-indigo hue family like the Daily
-# Routine Planner app. A soft lavender -> periwinkle backdrop with enough
+# Routine Planner app. An aurora backdrop (pink -> violet -> sky) with enough
 # colour for glass to read; cards are real glass on it: translucent white
 # (dark: smoky violet) with a top-to-bottom sheen, a white rim, a bright top
 # edge and a soft coloured shadow. Header = near-solid bar; footer = floating
@@ -185,7 +185,7 @@ LG_SHADOW = "0 16px 32px -14px rgba(76,61,180,0.38)"
 def tokens(dark, see_through=False, opacity=100):
     a = max(0.35, opacity / 100) if see_through else 1.0
     if dark:
-        stops = ((26, 21, 51), (27, 31, 69), (20, 26, 58))
+        stops = ((48, 20, 60), (30, 24, 74), (14, 34, 70))
         t = dict(card="rgba(40,35,76,0.55)",
                  card_img="linear-gradient(to bottom, rgba(255,255,255,0.10), rgba(255,255,255,0.03))",
                  card_solid="#221e3d", bar="rgba(24,21,48,%.2f)" % (0.80 if see_through else 0.92),
@@ -199,7 +199,7 @@ def tokens(dark, see_through=False, opacity=100):
                  hover="rgba(255,255,255,0.06)", sel="rgba(129,140,248,0.24)",
                  shadow="0 12px 28px -12px rgba(0,0,0,0.55)")
     else:
-        stops = ((232, 218, 255), (220, 224, 255), (203, 220, 255))
+        stops = ((255, 214, 236), (226, 214, 255), (200, 226, 255))
         t = dict(card="rgba(255,255,255,0.30)",
                  card_img="linear-gradient(to bottom, rgba(255,255,255,0.72), rgba(255,255,255,0.40))",
                  card_solid="#ffffff", bar="rgba(255,255,255,%.2f)" % (0.78 if see_through else 0.90),
@@ -230,12 +230,15 @@ def css_gtk4(dark, see_through=False, opacity=100):
   --view-bg-color: {t["view"]}; --view-fg-color: {t["text"]};
   --headerbar-bg-color: {t["bar"]}; --headerbar-backdrop-color: {t["bar"]};
   --sidebar-bg-color: {t["sidebar"]}; --secondary-sidebar-bg-color: {t["sidebar"]};
-  --card-bg-color: {t["card"]}; --dialog-bg-color: {t["card_solid"]};
+  --card-bg-color: {t["card"]}; --dialog-bg-color: {t["card_solid"]}; --sheet-bg-color: {t["card_solid"]};
   --popover-bg-color: {t["popover"]};
 }}
 window.background, window.background > contents {{ background-color: transparent; }}
 window.background {{ background-image: {t["backdrop"]}; }}
 window.dialog, window.messagedialog, dialog-host > dialog > sheet, popover > contents {{ background-image: none; }}
+/* dialogs and sheets are opaque: the window rule above leaves them transparent (video showed through) */
+window.dialog, window.messagedialog, window.dialog > contents, window.messagedialog > contents,
+dialog-host > dialog > sheet, floating-sheet > sheet, bottom-sheet > sheet {{ background-color: {t["card_solid"]}; }}
 .card, .boxed-list, list.boxed-list, .app-card {{ border-radius: 16px; {t["glass"]} }}
 list.boxed-list > row, .boxed-list > row {{ background-color: transparent; }}
 button:not(.flat):not(.suggested-action):not(.destructive-action):not(.osd):not(.image-button):not(.toggle) {{
