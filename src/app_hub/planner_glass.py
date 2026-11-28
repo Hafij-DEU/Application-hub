@@ -381,10 +381,9 @@ switch:checked {{ background-image: {t["accent"]}; }}
 
 
 def _colour_text(t):
-    """COLOURFUL, used with care (Astra Android's colourful pattern): text stays
-    neutral; each settings group / sidebar row takes one of the three colours
-    for its heading and icons, row icons sit on a small glossy chip of that
-    colour, selections get a glossy colour wash."""
+    """COLOURFUL, used with care: text stays neutral; headings, row/sidebar icons
+    (on a small glossy chip) and selections take ONE hue (the set's middle
+    colour); the other two colours only appear inside accent gradients."""
     if not t.get("colourful"):
         return ""
     gloss = "linear-gradient(to bottom, rgba(255,255,255,0.30), rgba(255,255,255,0.0) 60%)"
@@ -397,11 +396,11 @@ row:selected label.title, .navigation-sidebar > row:selected label {{ color: {t[
 link, label link, .link {{ color: {t["accent_text"]}; }}
 button.suggested-action, button.default {{ background-image: {gloss}, {t["accent"]}; }}
 """
-    for nth, n in (("3n+1", "1"), ("3n+2", "2"), ("3n", "3")):
-        ink, chip = t["i" + n], t["chip" + n]
-        css += f"""preferencesgroup:nth-child({nth}) .heading, .hb-section-group:nth-child({nth}) .heading {{ color: {ink}; }}
-preferencesgroup:nth-child({nth}) row box.prefixes > image {{ color: {ink}; background-color: {chip}; }}
-.navigation-sidebar > row:nth-child({nth}) image, list.hb-nav > row:nth-child({nth}) image {{ color: {ink}; }}
+    # one hue (the middle colour) for every heading/icon/chip: calm, not a rainbow
+    ink, chip = t["i2"], t["chip2"]
+    css += f"""preferencesgroup .heading, .hb-section-group .heading {{ color: {ink}; }}
+row box.prefixes > image, row > box > image.hb-row-icon {{ color: {ink}; background-color: {chip}; }}
+.navigation-sidebar > row image, list.hb-nav > row image {{ color: {ink}; }}
 """
     return css
 
