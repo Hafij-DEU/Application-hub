@@ -12,6 +12,7 @@ look. Works with GTK4/libadwaita (css_gtk4) and GTK3 (css_gtk3).
     look.set_choice("planner")
     look.css_gtk4(dark)
 """
+import colorsys
 import os
 
 from gi.repository import Gio, GLib
@@ -20,14 +21,29 @@ FUSION_SCHEMA = "org.gnome.shell.extensions.fusion-desk"
 FUSION_UUID = "fusion-desk@hafij-deu.github.io"
 STRENGTHS = ("style-strength", "shine-strength", "rim-strength", "glare-strength",
              "shadow-strength", "light-strength")
+LUMINA_KEYS = ("lumina", "lumina-colours", "lumina-colour", "lumina-intensity")
 KEYS = ("effect", "material", "style", "opacity", "rim", "glare", "shadow",
-        "light-follows") + STRENGTHS
+        "light-follows") + STRENGTHS + LUMINA_KEYS
 EFFECTS = ("OFF", "SOFT", "STRONG")
 MATERIALS = ("GLASS", "GLOSS")
 STYLES = ("CLEAR", "FROSTED", "GEL", "TINTED", "SMOKE", "HALO", "GLOW", "PLANNER")
+# Lumina (style PLANNER) options, global or per app like every other glass key:
+#   lumina=CALM (the v3 indigo look) | COLOURFUL (colour sets / accent / custom)
+#   lumina-colours=AURORA|SUNSET|OCEAN|CANDY|FOREST|ACCENT|CUSTOM
+#   lumina-colour=#rrggbb (for CUSTOM)   lumina-intensity=20..100
+LUMINA_STYLES = ("CALM", "COLOURFUL")
+LUMINA_SETS = {"AURORA": ("#ec4899", "#8b5cf6", "#38bdf8"), "SUNSET": ("#f97316", "#ec4899", "#8b5cf6"),
+               "OCEAN": ("#06b6d4", "#3b82f6", "#6366f1"), "CANDY": ("#f472b6", "#a78bfa", "#34d399"),
+               "FOREST": ("#22c55e", "#14b8a6", "#0ea5e9")}
+LUMINA_COLOURS = tuple(LUMINA_SETS) + ("ACCENT", "CUSTOM")
+# GNOME 47+ accent-color names (org.gnome.desktop.interface)
+GNOME_ACCENTS = {"blue": "#3584e4", "teal": "#2190a4", "green": "#3a944a", "yellow": "#c88800",
+                 "orange": "#ed5b00", "red": "#e62d42", "pink": "#d56199", "purple": "#9141ac",
+                 "slate": "#6f8396"}
 DEFAULT = {"effect": "STRONG", "material": "GLASS", "style": "FROSTED", "opacity": 75,
            "rim": True, "glare": True, "shadow": False, "light-follows": False,
-           **{k: 100 for k in STRENGTHS}}
+           **{k: 100 for k in STRENGTHS},
+           "lumina": "CALM", "lumina-colours": "AURORA", "lumina-colour": "#8b5cf6", "lumina-intensity": 70}
 OFF = dict(DEFAULT, effect="OFF", opacity=100)
 PLANNER_SPEC = dict(DEFAULT, style="PLANNER", opacity=100, glare=False, shadow=True)
 CHOICES = (("follow", "Follow Harbor Settings"), ("planner", "Lumina Glass"),
@@ -74,6 +90,18 @@ def _set(spec, key, value):
         spec[key] = min(200, int(value))
     elif key in ("rim", "glare", "shadow", "light-follows"):
         spec[key] = value == "true"
+    elif key == "lumina" and value.upper() in LUMINA_STYLES:
+        spec[key] = value.upper()
+    elif key == "lumina-colours" and value.upper() in LUMINA_COLOURS:
+        spec[key] = value.upper()
+    elif key == "lumina-colour" and len(value) == 7 and value.startswith("#"):
+        try:
+            int(value[1:], 16)
+            spec[key] = value.lower()
+        except ValueError:
+            pass
+    elif key == "lumina-intensity" and value.isdigit():
+        spec[key] = max(20, min(100, int(value)))
 
 
 def parse(text):
@@ -126,8 +154,8 @@ def global_glass(fusion=None):
 def scope_glass(scope):
     """A scope's own values ("harbor" or an app name), or None to follow."""
     text = _read("glass" if scope == "harbor" else "glass-" + scope)
-    if text is None:
-        return dict(OFF) if scope == "harbor" else None
+    if text is None:  # missing: follow (the All Harbor apps scope is gone; it follows Global)
+        return None
     if text in ("", "global", "harbor"):
         return None
     return parse(text)
@@ -178,11 +206,63 @@ def is_planner(spec):
 # glass card.
 ACCENT = "linear-gradient(135deg, #6366f1, #8b5cf6)"
 ACCENT_SHADOW = "0 8px 18px -6px rgba(99,102,241,0.50)"
+
+
+def _rgb(hexcol):
+    h = hexcol.lstrip("#")
+    return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
+
+
+def _mix(hexcol, base, amount):
+    c = _rgb(hexcol)
+    return tuple(round(base[i] + (c[i] - base[i]) * amount) for i in range(3))
+
+
+def _hex(rgb):
+    return "#%02x%02x%02x" % rgb
+
+
+def _rgba(hexcol, alpha):
+    return "rgba(%d,%d,%d,%.3f)" % (*_rgb(hexcol), max(0.0, min(1.0, alpha)))
+
+
+def triad(hexcol):
+    """Three neighbouring hues around one colour (-32 deg, itself, +32 deg), kept
+    bright enough to read as colour: one accent still gives a colour sweep."""
+    r, g, b = (v / 255 for v in _rgb(hexcol))
+    h, light, sat = colorsys.rgb_to_hls(r, g, b)
+    light, sat = min(max(light, 0.45), 0.62), max(sat, 0.55)
+
+    def at(dh):
+        return _hex(tuple(round(v * 255) for v in colorsys.hls_to_rgb((h + dh) % 1.0, light, sat)))
+    return at(-32 / 360), at(0), at(32 / 360)
+
+
+def system_accent():
+    try:
+        iface = Gio.Settings(schema_id="org.gnome.desktop.interface")
+        if "accent-color" in iface.props.settings_schema.list_keys():
+            return GNOME_ACCENTS.get(iface.get_string("accent-color"), "#3584e4")
+    except Exception:
+        pass
+    return "#3584e4"
+
+
+def lumina_colours(spec):
+    """(c1, c2, c3) for a COLOURFUL Lumina spec, None for CALM."""
+    if not spec or spec.get("lumina") != "COLOURFUL":
+        return None
+    which = spec.get("lumina-colours", "AURORA")
+    if which == "ACCENT":
+        return triad(system_accent())
+    if which == "CUSTOM":
+        return triad(spec.get("lumina-colour", "#8b5cf6"))
+    return LUMINA_SETS.get(which, LUMINA_SETS["AURORA"])
 CARD_SHADOW = "0 10px 24px -12px rgba(76,61,180,0.30), 0 2px 6px -2px rgba(76,61,180,0.10)"
 LG_SHADOW = "0 16px 32px -14px rgba(76,61,180,0.38)"
 
 
-def tokens(dark, see_through=False, opacity=100):
+def tokens(dark, see_through=False, opacity=100, spec=None):
     a = max(0.35, opacity / 100) if see_through else 1.0
     if dark:
         stops = ((26, 21, 51), (27, 31, 69), (20, 26, 58))
@@ -212,6 +292,38 @@ def tokens(dark, see_through=False, opacity=100):
                  btn_text="#4338ca", btn_line="rgba(255,255,255,0.90)",
                  hover="rgba(255,255,255,0.45)", sel="rgba(99,102,241,0.14)",
                  shadow=CARD_SHADOW)
+    t.update(a1="#6366f1", a2="#8b5cf6", a3="#9333ea", accent=ACCENT, accent_shadow=ACCENT_SHADOW,
+             shade="49,46,129")
+    cols = lumina_colours(spec)
+    if cols:  # COLOURFUL: backdrop, accents and selection from the chosen colours
+        c1, c2, c3 = cols
+        k = (spec.get("lumina-intensity", 70) or 70) / 100
+        # colour goes into a few headings, icons and selections; the backdrop
+        # keeps only a faint tint so window edges stay calm (no coloured glows)
+        if dark:
+            base = (20, 16, 40)
+            stops = (_mix(c1, base, 0.13 * k), _mix(c2, base, 0.12 * k), _mix(c3, base, 0.11 * k))
+            on = (255, 255, 255)
+            t.update(accent_text=_hex(_mix(c2, on, 0.60)), btn_text=_hex(_mix(c2, on, 0.55)),
+                     title=_hex(_mix(c2, on, 0.50 + 0.3 * k)), icon=_hex(_mix(c3, on, 0.55 + 0.25 * k)),
+                     chip=_rgba(c3, 0.20), chip_line=_rgba(c3, 0.30), sel=_rgba(c2, 0.24))
+        else:
+            base = (250, 248, 255)
+            stops = (_mix(c1, base, 0.11 * k), _mix(c2, base, 0.09 * k), _mix(c3, base, 0.10 * k))
+            ink = (20, 16, 40)
+            t.update(accent_text=_hex(_mix(c2, ink, 0.80)), btn_text=_hex(_mix(c2, ink, 0.78)),
+                     title=_hex(_mix(c2, ink, 0.60 + 0.25 * k)), icon=_hex(_mix(c3, ink, 0.70 + 0.2 * k)),
+                     chip=_rgba(c3, 0.14), chip_line="rgba(255,255,255,0.85)", sel=_rgba(c2, 0.14),
+                     hair=_rgba(c2, 0.12))
+        # per-colour ink for icons/headings (like Astra Android's colourful palette)
+        on_ = (255, 255, 255) if dark else (20, 16, 40)
+        tone = 0.62 + 0.2 * k if dark else 0.78 + 0.12 * k
+        for n, c in (("1", c1), ("2", c2), ("3", c3)):
+            t["i" + n] = _hex(_mix(c, on_, tone))
+            t["chip" + n] = _rgba(c, (0.20 if dark else 0.14) * (0.6 + 0.6 * k))
+        t.update(a1=c1, a2=c2, a3=c3, accent="linear-gradient(135deg, %s, %s)" % (c1, c2),
+                 accent_shadow="0 4px 10px -6px rgba(0,0,0,0.35)", shade="%d,%d,%d" % _rgb(c2),
+                 colourful=True)
     t["backdrop"] = "linear-gradient(150deg, %s)" % ", ".join(
         "rgba(%d,%d,%d,%.2f)" % (*c, a) for c in stops)
     t["glass"] = "background-color: %s; background-image: %s; border: 1px solid %s; box-shadow: %s, %s;" % (
@@ -219,13 +331,13 @@ def tokens(dark, see_through=False, opacity=100):
     return t
 
 
-def css_gtk4(dark, see_through=False, opacity=100):
+def css_gtk4(dark, see_through=False, opacity=100, spec=None):
     """libadwaita: recolour through Adwaita's CSS variables, paint the planner
     gradient on the window, planner corners, gradient suggested buttons."""
-    t = tokens(dark, see_through, opacity)
+    t = tokens(dark, see_through, opacity, spec)
     return f"""
 :root {{
-  --accent-bg-color: #6366f1; --accent-fg-color: #ffffff; --accent-color: {t["accent_text"]};
+  --accent-bg-color: {t["a1"]}; --accent-fg-color: #ffffff; --accent-color: {t["accent_text"]};
   --window-bg-color: transparent; --window-fg-color: {t["text"]};
   --view-bg-color: {t["view"]}; --view-fg-color: {t["text"]};
   --headerbar-bg-color: {t["bar"]}; --headerbar-backdrop-color: {t["bar"]};
@@ -251,30 +363,56 @@ button.toggle:checked, viewswitcher button:checked, stackswitcher button:checked
 dialog-host > dialog > sheet, window.dialog {{ border-radius: 24px; }}
 button {{ border-radius: 12px; }}
 button.circular, button.pill {{ border-radius: 9999px; }}
-button.suggested-action, button.default {{ background-image: {ACCENT}; color: #ffffff;
-  border: 1px solid rgba(255,255,255,0.20); box-shadow: {ACCENT_SHADOW}; }}
+button.suggested-action, button.default {{ background-image: {t["accent"]}; color: #ffffff;
+  border: 1px solid rgba(255,255,255,0.20); box-shadow: {t["accent_shadow"]}; }}
 button.suggested-action:hover {{ opacity: 0.9; }}
 button:active, button:checked:active {{ transform: scale(0.97); }}
 entry, spinbutton, searchentry, dropdown > button, combobox > box > button {{ border-radius: 12px; }}
-entry:focus-within, searchentry:focus-within {{ box-shadow: 0 0 0 2px #6366f1; }}
+entry:focus-within, searchentry:focus-within {{ box-shadow: 0 0 0 2px {t["a1"]}; }}
 /* header: solid surface anchored to the top; footer: floating rounded card */
-headerbar {{ background-color: {t["bar"]}; box-shadow: 0 1px {t["hair"]}, 0 6px 14px -10px rgba(49,46,129,{0.5 if dark else 0.25}); }}
+headerbar {{ background-color: {t["bar"]}; box-shadow: 0 1px {t["hair"]}, 0 6px 14px -10px rgba({t["shade"]},{0.5 if dark else 0.25}); }}
 toolbarview > .bottom-bar, actionbar > revealer > box {{ margin: 0 12px 12px; border-radius: 16px; {t["glass"]} }}
 actionbar {{ background-color: transparent; border: none; box-shadow: none; }}
 row:selected, .navigation-sidebar > row:selected {{ background-color: {t["sel"]}; background-image: none; }}
-progressbar > trough > progress, scale > trough > highlight {{ background-image: linear-gradient(to right, #6366f1, #8b5cf6); }}
+progressbar > trough > progress, scale > trough > highlight {{ background-image: linear-gradient(to right, {t["a1"]}, {t["a2"]}, {t["a3"] if t["a1"] != "#6366f1" else t["a2"]}); }}
 progressbar > trough, scale > trough {{ background-color: {t["btn"]}; }}
-switch:checked {{ background-image: {ACCENT}; }}
+switch:checked {{ background-image: {t["accent"]}; }}
+""" + _colour_text(t)
+
+
+def _colour_text(t):
+    """COLOURFUL, used with care (Astra Android's colourful pattern): text stays
+    neutral; each settings group / sidebar row takes one of the three colours
+    for its heading and icons, row icons sit on a small glossy chip of that
+    colour, selections get a glossy colour wash."""
+    if not t.get("colourful"):
+        return ""
+    gloss = "linear-gradient(to bottom, rgba(255,255,255,0.30), rgba(255,255,255,0.0) 60%)"
+    css = f"""
+.title-1, .title-2, .app-title {{ color: {t["title"]}; }}
+row box.prefixes > image, row > box > image.hb-row-icon {{ background-image: {gloss};
+  border-radius: 10px; padding: 6px; box-shadow: inset 0 0 0 1px {t["chip_line"]}; }}
+row:selected, .navigation-sidebar > row:selected {{ background-color: {t["sel"]}; background-image: {gloss}; }}
+row:selected label.title, .navigation-sidebar > row:selected label {{ color: {t["title"]}; }}
+link, label link, .link {{ color: {t["accent_text"]}; }}
+button.suggested-action, button.default {{ background-image: {gloss}, {t["accent"]}; }}
 """
+    for nth, n in (("3n+1", "1"), ("3n+2", "2"), ("3n", "3")):
+        ink, chip = t["i" + n], t["chip" + n]
+        css += f"""preferencesgroup:nth-child({nth}) .heading, .hb-section-group:nth-child({nth}) .heading {{ color: {ink}; }}
+preferencesgroup:nth-child({nth}) row box.prefixes > image {{ color: {ink}; background-color: {chip}; }}
+.navigation-sidebar > row:nth-child({nth}) image, list.hb-nav > row:nth-child({nth}) image {{ color: {ink}; }}
+"""
+    return css
 
 
-def css_gtk3(dark, see_through=False, opacity=100):
+def css_gtk3(dark, see_through=False, opacity=100, spec=None):
     """GTK3 (no CSS variables): named colours and plain values."""
-    t = tokens(dark, see_through, opacity)
+    t = tokens(dark, see_through, opacity, spec)
     return f"""
-@define-color theme_selected_bg_color #6366f1;
+@define-color theme_selected_bg_color {t["a1"]};
 @define-color theme_selected_fg_color #ffffff;
-@define-color accent_bg_color #6366f1;
+@define-color accent_bg_color {t["a1"]};
 window, .background {{ background-color: transparent; background-image: {t["backdrop"]}; color: {t["text"]}; }}
 headerbar, .titlebar {{ background-color: {t["card_solid"]}; border: none; background-image: none;
   box-shadow: inset 0 -1px {t["hair"]}; color: {t["text"]}; }}
@@ -294,29 +432,29 @@ combobox button, combobox button label {{ background-color: {t["field"]}; color:
 headerbar button, .titlebar button {{ background-color: transparent; border-color: transparent; }}
 actionbar > revealer > box {{ margin: 0 12px 12px; border-radius: 16px; {t["glass"]} }}
 headerbar button:hover, .titlebar button:hover {{ background-color: {t["hover"]}; }}
-button.suggested-action, button.default {{ background-image: {ACCENT}; color: #ffffff;
-  border: 1px solid rgba(255,255,255,0.20); box-shadow: {ACCENT_SHADOW}; }}
+button.suggested-action, button.default {{ background-image: {t["accent"]}; color: #ffffff;
+  border: 1px solid rgba(255,255,255,0.20); box-shadow: {t["accent_shadow"]}; }}
 button.suggested-action label, button.default label {{ color: #ffffff; }}
 button.destructive-action {{ border-radius: 12px; }}
 entry, spinbutton, combobox button {{ border-radius: 12px; background-color: {t["field"]};
   background-image: none; color: {t["text"]}; border: 1px solid {t["line"]}; }}
 spinbutton entry, spinbutton button {{ background-color: transparent; border-color: transparent;
   box-shadow: none; }}
-entry:focus, spinbutton:focus {{ box-shadow: 0 0 0 2px #6366f1; }}
+entry:focus, spinbutton:focus {{ box-shadow: 0 0 0 2px {t["a1"]}; }}
 check, radio {{ background-color: {t["field"]}; background-image: none; border: 1px solid {t["faint"]};
   color: #ffffff; }}
-check:checked, radio:checked, check:indeterminate {{ background-color: #6366f1;
-  background-image: linear-gradient(135deg, #6366f1, #8b5cf6); border-color: #6366f1; }}
+check:checked, radio:checked, check:indeterminate {{ background-color: {t["a1"]};
+  background-image: {t["accent"]}; border-color: {t["a1"]}; }}
 check {{ border-radius: 6px; }}
 scale trough {{ background-color: {t["btn"]}; background-image: none; border-color: transparent; }}
-scale slider {{ background-color: #ffffff; background-image: none; border: 1px solid #6366f1; }}
-progressbar progress, scale highlight, levelbar block.filled {{ background-color: #6366f1;
-  background-image: linear-gradient(to right, #6366f1, #9333ea); }}
-switch:checked {{ background-color: #6366f1; }}
+scale slider {{ background-color: #ffffff; background-image: none; border: 1px solid {t["a1"]}; }}
+progressbar progress, scale highlight, levelbar block.filled {{ background-color: {t["a1"]};
+  background-image: linear-gradient(to right, {t["a1"]}, {t["a3"]}); }}
+switch:checked {{ background-color: {t["a1"]}; }}
 menu, .menu, popover {{ background-color: {t["popover"]}; background-image: none; }}
 label {{ color: {t["text"]}; }}
 .dim-label {{ color: {t["soft"]}; }}
-"""
+""" + _colour_text(t)
 
 
 # ---- per-app state, choice and live watching --------------------------------
@@ -361,13 +499,23 @@ class Look:
             _write("glass-" + self.app, to_text(OFF))
         self._changed()
 
+    def set_own(self, key, value):
+        """Give this app its own Lumina values with one key changed (what
+        Harbor Settings' per-app scope writes too)."""
+        own = scope_glass(self.app) or dict(self.spec)
+        own["effect"] = own["effect"] if own["effect"] != "OFF" else "STRONG"
+        own["style"] = "PLANNER"
+        _set(own, key, value)
+        _write("glass-" + self.app, to_text(own))
+        self._changed()
+
     def css_gtk4(self, dark):
         spec = self.spec
-        return css_gtk4(dark, self.see_through, spec["opacity"]) if is_planner(spec) else ""
+        return css_gtk4(dark, self.see_through, spec["opacity"], spec) if is_planner(spec) else ""
 
     def css_gtk3(self, dark):
         spec = self.spec
-        return css_gtk3(dark, self.see_through, spec["opacity"]) if is_planner(spec) else ""
+        return css_gtk3(dark, self.see_through, spec["opacity"], spec) if is_planner(spec) else ""
 
     def _changed(self, *_):
         if self.on_change:
@@ -383,6 +531,12 @@ class Look:
                 self._monitors.append(mon)
             except (GLib.Error, OSError):
                 pass
+        try:  # COLOURFUL + ACCENT follows the GNOME accent live
+            self._iface = Gio.Settings(schema_id="org.gnome.desktop.interface")
+            self._iface.connect("changed::accent-color", lambda *_: self.spec.get(
+                "lumina-colours") == "ACCENT" and self._changed())
+        except Exception:
+            self._iface = None
         self._fusion = fusion_settings()
         if self._fusion is not None:
             self._fusion.connect(
