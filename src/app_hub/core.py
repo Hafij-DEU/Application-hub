@@ -86,6 +86,8 @@ class App:
     browser_extensions: list = field(default_factory=list)
     # [{"pattern": regex, "folder": "Name/chrome"}]: release .zip files unpacked into Documents
     # with the app (and refreshed when a newer one is released), e.g. Draco's browser extension
+    browser: str = ""                              # browser-extension app (section "browser"): the
+                                                   # Documents folder its release .zip is unpacked into
     release: Release | None = None
     error: str = ""
 
@@ -102,6 +104,11 @@ class App:
         if self.installed_alt and clean_version(self.installed_alt) == self.release.version:
             return False
         return is_newer(self.release.tag or self.release.version, self.installed)
+
+    @property
+    def is_zip(self):
+        """Installed from a release .zip (GNOME or browser extension), not a .deb."""
+        return bool(self.extension or self.browser)
 
     @property
     def renamed(self):
@@ -124,7 +131,7 @@ class App:
         elif self.release is None:
             parts.append("checking…")
         elif not self.release.asset_url:
-            parts.append(f"{self.release.tag} has no " + ("extension .zip" if self.extension
+            parts.append(f"{self.release.tag} has no " + ("extension .zip" if self.is_zip
                                                            else ".deb for this system"))
         elif self.installed and not self.update_available and is_newer(
                 clean_version(self.installed), self.release.version):
@@ -241,6 +248,9 @@ def refresh_installed(apps):
         if app.extension:
             app.installed = extension_version(app)
             app.installed_alt = extension_version(app, raw=True) or ""
+            continue
+        if app.browser:
+            app.installed = _browser_extension_version(browser_extension_dir(app.browser)) or None
             continue
         for pkg in [app.package, *app.replaces]:
             version = installed_version(pkg)
@@ -497,7 +507,7 @@ def pick_zip(assets, pattern=""):
 
 
 def _pick(app, assets):
-    return pick_zip(assets, app.asset_pattern) if app.extension else pick_asset(assets, app.asset_pattern)
+    return pick_zip(assets, app.asset_pattern) if app.is_zip else pick_asset(assets, app.asset_pattern)
 
 
 def fetch_release(app):
@@ -523,7 +533,7 @@ def fetch_release(app):
                 # A repo with several apps (asset_pattern set): the newer tag belongs to
                 # another app, e.g. an Android APK release. Flag only a newer version.
                 latest_tag = data.get("tag_name", "")
-                other_app = app.asset_pattern and not app.extension
+                other_app = app.asset_pattern and not app.is_zip
                 skipped = ("" if other_app or not is_newer(latest_tag, r.get("tag_name", ""))
                            else latest_tag)
                 stale = data if isinstance(data, Stale) else None
@@ -569,7 +579,7 @@ def download_stats(app):
         raise
     except Exception as e:  # e.g. a stale cache entry that is not a list
         raise HubError(str(e)) from None
-    kind = ".zip" if app.extension else ".deb"
+    kind = ".zip" if app.is_zip else ".deb"
     out = []
     for r in data if isinstance(data, list) else []:
         if not isinstance(r, dict) or r.get("draft"):
@@ -623,7 +633,7 @@ def download(app, progress=None, cancel: threading.Event | None = None):
     """Download the app's release .deb into the cache and verify it. Returns the path."""
     rel = app.release
     if not rel or not rel.asset_url:
-        raise HubError(f"{app.name}: no {'extension .zip' if app.extension else '.deb'} to download")
+        raise HubError(f"{app.name}: no {'extension .zip' if app.is_zip else '.deb'} to download")
     folder = os.path.join(CACHE_DIR, app.id)
     os.makedirs(folder, exist_ok=True)
     path = os.path.join(folder, rel.asset_name)
@@ -666,6 +676,8 @@ def download(app, progress=None, cancel: threading.Event | None = None):
     os.replace(part, path)
     if app.extension:
         check_extension_zip(path, app.extension)
+    elif app.browser:
+        check_browser_zip(path)
     _verified[path] = digest.hexdigest()
     return path
 
@@ -859,20 +871,7 @@ def sync_browser_extensions(app, log=None, force=False):
                 raise HubError(f"{x['name']}: checksum mismatch")
             with open(path, "wb") as f:
                 f.write(data)
-            import zipfile
-            tmp = target + ".app-hub-new"
-            shutil.rmtree(tmp, ignore_errors=True)
-            with zipfile.ZipFile(path) as z:
-                for name in z.namelist():                     # refuse paths leaving the folder
-                    dest = os.path.normpath(os.path.join(tmp, name))
-                    if not dest.startswith(os.path.normpath(tmp) + os.sep):
-                        raise HubError(f"{x['name']}: unsafe path {name}")
-                z.extractall(tmp)
-            if not os.path.exists(os.path.join(tmp, "manifest.json")):
-                raise HubError(f"{x['name']}: not a browser extension (no manifest.json)")
-            os.makedirs(os.path.dirname(target), exist_ok=True)
-            shutil.rmtree(target, ignore_errors=True)
-            os.replace(tmp, target)
+            unpack_browser_zip(path, target, x["name"])
             _unlink(path)
             done.append(target)
             if log:
@@ -882,6 +881,59 @@ def sync_browser_extensions(app, log=None, force=False):
             if log:
                 log(f"{app.name}: browser extension not updated ({getattr(e, 'reason', e)})")
     return done
+
+
+def unpack_browser_zip(path, target, label):
+    """Unpack a browser-extension .zip into target, replacing what was there."""
+    import zipfile
+    tmp = target + ".app-hub-new"
+    shutil.rmtree(tmp, ignore_errors=True)
+    try:
+        with zipfile.ZipFile(path) as z:
+            for name in z.namelist():                     # refuse paths leaving the folder
+                dest = os.path.normpath(os.path.join(tmp, name))
+                if not dest.startswith(os.path.normpath(tmp) + os.sep):
+                    raise HubError(f"{label}: unsafe path {name}")
+            z.extractall(tmp)
+        if not os.path.exists(os.path.join(tmp, "manifest.json")):
+            raise HubError(f"{label}: not a browser extension (no manifest.json)")
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    shutil.rmtree(target, ignore_errors=True)
+    os.replace(tmp, target)
+
+
+def check_browser_zip(path):
+    """Refuse a .zip that is not a browser extension (manifest.json at the top)."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            json.loads(z.read("manifest.json"))
+    except (OSError, KeyError, ValueError, zipfile.BadZipFile):
+        _unlink(path)
+        raise HubError(f"{os.path.basename(path)} is not a browser extension") from None
+
+
+def install_browser_app(app, path, log=None):
+    """Browser-extension app: unpack the release .zip into its Documents folder (no password)."""
+    target = browser_extension_dir(app.browser)
+    unpack_browser_zip(path, target, os.path.basename(path))
+    if log:
+        log(f"{app.name}: unpacked into {target}. First time: load that folder with Load unpacked "
+            "in brave://extensions (or chrome://extensions). After an update: click Reload on its card there.")
+
+
+def open_browser_app(app):
+    """Show the extension's folder (the one to pick with Load unpacked)."""
+    target = browser_extension_dir(app.browser)
+    if not os.path.isdir(target):
+        raise HubError(f"{app.name} is not installed")
+    if shutil.which("xdg-open"):
+        subprocess.Popen(["xdg-open", target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    raise HubError(f"open {target} in your file manager")
 
 
 # --- GNOME Shell extensions -----------------------------------------------
@@ -972,9 +1024,17 @@ def install_user_extension(app, path, log=None):
         raise HubError(f"{app.name}: gnome-extensions install failed: {out.strip()[-200:]}")
 
 
+def install_user_zip(app, path, log=None):
+    """Personal .zip apps (GNOME extension for this user, browser extension) need no password."""
+    if app.browser:
+        install_browser_app(app, path, log)
+    else:
+        install_user_extension(app, path, log)
+
+
 def root_steps(staged):
     """Helper plan steps for downloaded apps that need root (.deb files, system extensions)."""
-    debs = [(a.package, p) for a, p in staged if not a.extension]
+    debs = [(a.package, p) for a, p in staged if not a.is_zip]
     steps = install_plan(debs) if debs else []
     steps += [["install-extension", a.extension, p, "gdm" if a.gdm else ""]
               for a, p in staged if a.extension and a.system]
@@ -986,9 +1046,9 @@ def install_staged(staged, log=None):
     prompt. Returns (rc, output)."""
     failed, out = 0, ""
     for app, path in staged:
-        if app.extension and not app.system:
+        if (app.extension and not app.system) or app.browser:
             try:
-                install_user_extension(app, path, log)
+                install_user_zip(app, path, log)
                 finish_install(app, log)
             except HubError as e:
                 failed = 1
@@ -1000,13 +1060,19 @@ def install_staged(staged, log=None):
         rc, out = run_helper(steps, log)
         if rc == 0:
             for app, _ in staged:
-                if not app.extension or app.system:
+                if not app.is_zip or app.system:
                     finish_install(app, log)
     return (rc or failed), out
 
 
 def uninstall_extension(app, log=None):
     """Remove an extension (system ones through the helper). Returns (rc, output)."""
+    if app.browser:
+        path = browser_extension_dir(app.browser)
+        shutil.rmtree(path, ignore_errors=True)
+        if log:
+            log(f"removed {path}; also click Remove on its card in the browser's extensions page")
+        return 0, ""
     disable_extension(app.extension)
     if app.system:
         return run_helper([["remove-extension", app.extension]], log)
@@ -1018,7 +1084,9 @@ def uninstall_extension(app, log=None):
 
 
 def open_extension(app):
-    """Open an extension's settings, or the Extensions app."""
+    """Open an extension's settings, or the Extensions app (a browser extension: its folder)."""
+    if app.browser:
+        return open_browser_app(app)
     for cmd in (["gnome-extensions", "prefs", app.extension], ["gtk-launch", "org.gnome.Extensions"],
                 ["gtk-launch", "com.mattjakeman.ExtensionManager"]):
         if shutil.which(cmd[0]) and subprocess.run(cmd, stdout=subprocess.DEVNULL,
@@ -1087,7 +1155,7 @@ def in_own_scope(cmd, app_id):
 
 
 def launch(app):
-    if app.extension:
+    if app.is_zip:
         return open_extension(app)
     names = [app.desktop] if app.desktop else []
     names += [os.path.basename(p) for p in _package_desktop_files(app.installed_as or app.package)]

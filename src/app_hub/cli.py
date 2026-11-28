@@ -139,9 +139,9 @@ def cmd_remove(args):
     if not todo:
         return 0
     rc = 0
-    for app in [a for a in todo if a.extension]:
+    for app in [a for a in todo if a.is_zip]:
         rc = core.uninstall_extension(app, print)[0] or rc
-    debs = [a.installed_as or a.package for a in todo if not a.extension]
+    debs = [a.installed_as or a.package for a in todo if not a.is_zip]
     if debs:
         rc = core.run_helper([["apt-remove", *debs]], print)[0] or rc
     if rc in core.AUTH_CANCELLED:

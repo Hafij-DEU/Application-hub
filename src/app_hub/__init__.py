@@ -1,2 +1,2 @@
-__version__ = "1.7.21"
+__version__ = "1.8.0"
 APP_ID = "io.github.hafij_bge.AppHub"

@@ -486,11 +486,15 @@ class HubSection:
         self.win.run_job(f"Install {names}", work)
 
     def uninstall(self, app):
-        if app.extension:
-            dialog = Adw.AlertDialog(
-                heading=f"Uninstall {app.name}?",
-                body="The extension is turned off and removed. Log out and back in to unload it."
-                     + (" It is also removed from the login screen." if app.gdm else ""))
+        if app.is_zip:
+            if app.browser:
+                body = (f"The folder {core.browser_extension_dir(app.browser)} is deleted. Also click Remove on "
+                        f"{app.name}'s card in the browser's extensions page. Ink or settings it keeps in the "
+                        "browser stay until you remove it there.")
+            else:
+                body = ("The extension is turned off and removed. Log out and back in to unload it."
+                        + (" It is also removed from the login screen." if app.gdm else ""))
+            dialog = Adw.AlertDialog(heading=f"Uninstall {app.name}?", body=body)
             dialog.add_response("cancel", "Cancel")
             dialog.add_response("remove", "Uninstall")
             dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -564,6 +568,10 @@ class HomePage:
         self.ext_hub = HubSection(win, "Extensions",
                                   "GNOME Shell extensions · log out and back in after installing or updating",
                                   [a for a in catalog if a.section == "extension"])
+        self.browser_hub = HubSection(win, "Browser extensions",
+                                      "Unpacked into Documents · first time: Load unpacked in brave://extensions;"
+                                      " after an update: click Reload on its card there",
+                                      [a for a in catalog if a.section == "browser"])
         core.refresh_installed(self.apps)
 
         self.fav_group = Adw.PreferencesGroup()
@@ -589,20 +597,20 @@ class HomePage:
         fav_box = titled("Favorites", "Apps you starred. Install them on any machine with one click.",
                          self.fav_group, self.fav_install_btn)
         self.widget, _ = scrolled_page(self.self_hub.group, self.hub.group, self.ext_hub.group,
-                                       self.dl_box, fav_box)
+                                       self.browser_hub.group, self.dl_box, fav_box)
         self.set_admin(core.is_admin())
         self.reload_favorites()
         self.refresh()
 
     @property
     def apps(self):
-        return self.self_hub.apps + self.hub.apps + self.ext_hub.apps
+        return self.self_hub.apps + self.hub.apps + self.ext_hub.apps + self.browser_hub.apps
 
     @staticmethod
     def my_apps():
         catalog = core.load_catalog(include_library=False)
         ids = {a.id for a in catalog}
-        return [a for a in catalog if a.section not in ("self", "extension")] + [
+        return [a for a in catalog if a.section not in ("self", "extension", "browser")] + [
             a for a in library.load_apps() if a.section == "mine" and a.id not in ids]
 
     def set_admin(self, admin):
@@ -656,11 +664,13 @@ class HomePage:
         self.self_hub.refresh()
         self.hub.refresh()
         self.ext_hub.refresh()
+        self.browser_hub.refresh()
 
     def sync(self):
         self.self_hub.sync()
         self.hub.sync()
         self.ext_hub.sync()
+        self.browser_hub.sync()
         for row in self.fav_rows:
             row.sync()
         missing = [r for r in self.fav_rows if self.win.inventory_loaded and not r.installed_app()]
@@ -2225,7 +2235,7 @@ class Window(Adw.ApplicationWindow):
     # --- actions ---
 
     def open_hub(self, app):
-        if app.extension:
+        if app.is_zip:
             def work():
                 try:
                     core.open_extension(app)

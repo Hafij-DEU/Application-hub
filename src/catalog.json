@@ -150,6 +150,16 @@
       "extension": "signin-button@hafij-deu.github.io",
       "system": true,
       "gdm": true
+    },
+    {
+      "id": "inkwell-pdf",
+      "name": "Inkwell PDF",
+      "summary": "Write on PDFs like Xournal++ in Brave or Chrome, with an AI sidebar",
+      "repo": "Hafij-DEU/inkwell-pdf",
+      "package": "inkwell-pdf",
+      "section": "browser",
+      "browser": "Inkwell PDF Browser Extension",
+      "asset_pattern": "^inkwell-pdf-.*\\.zip$"
     }
   ]
 }

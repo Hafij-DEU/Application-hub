@@ -73,14 +73,14 @@ def run(pending, log, system=False, progress=None, cancel=None, phased=False):
     plan = [["keep-going"]]
     if system:
         plan.append(["apt-refresh"])
-    for app, path in [(a, p) for a, p in staged if a.extension and not a.system]:
+    for app, path in [(a, p) for a, p in staged if (a.extension and not a.system) or a.browser]:
         try:   # personal extensions need no password
-            core.install_user_extension(app, path, emit)
+            core.install_user_zip(app, path, emit)
             core.finish_install(app, emit)
         except core.HubError as e:
             emit(str(e))
             failed += 1
-    staged = [(a, p) for a, p in staged if not a.extension or a.system]
+    staged = [(a, p) for a, p in staged if not a.is_zip or a.system]
     plan += core.root_steps(staged)
     apt = [p.obj.id for p in pending if p.kind == "apt"]
     if apt and not system:
