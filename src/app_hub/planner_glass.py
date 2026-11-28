@@ -11,9 +11,26 @@ look. Works with GTK4/libadwaita (css_gtk4) and GTK3 (css_gtk3).
     look.choice()    -> "follow" | "planner" | "normal"
     look.set_choice("planner")
     look.css_gtk4(dark)
+
+Layers (each one only uses the ones above it):
+    1. files    read_file / write_file: the shared files in ~/.config/harbor/
+                (a failed read or write is logged, writes are atomic)
+    2. spec     set_value / parse / resolve: files + Fusion Desk -> one glass
+                dict; resolve_explained also says which layer decided it
+    3. tokens   colour helpers and tokens(): a spec -> named colours
+    4. CSS      css_gtk4 / css_gtk3: tokens -> GTK CSS
+    5. Look     one app's live state: watches the files, calls on_change
+
+Finding problems:
+    python3 planner_glass.py --check [app ...]   which layer decides each app's
+                                                 look, the values, and every
+                                                 ignored line in the files
+    PLANNER_GLASS_DEBUG=1 <app>                  log each resolve that changes
 """
 import colorsys
 import os
+import re
+import sys
 
 from gi.repository import Gio, GLib
 
@@ -48,71 +65,118 @@ OFF = dict(DEFAULT, effect="OFF", opacity=100)
 PLANNER_SPEC = dict(DEFAULT, style="PLANNER", opacity=100, glare=False, shadow=True)
 CHOICES = (("follow", "Follow Harbor Settings"), ("planner", "Lumina Glass"),
            ("normal", "Normal"))
+# Old one-word file contents, still understood (any case).
+LEGACY = {"off": OFF,
+          "glossy": dict(DEFAULT, effect="SOFT", material="GLOSS", style="GEL", opacity=100),
+          "liquid": dict(DEFAULT, style="CLEAR", opacity=80)}
+FOLLOW_WORDS = ("", "global", "harbor")
+DEBUG = bool(os.environ.get("PLANNER_GLASS_DEBUG"))
+_HEX = re.compile(r"#[0-9a-fA-F]{6}")
+_warned = set()
 
 
-# ---- shared glass files (same chain as harbor/common.py resolve_glass) ----
+def log(msg, once_key=None):
+    """One line on stderr; with once_key, only the first time per process."""
+    if once_key is not None:
+        if once_key in _warned:
+            return
+        _warned.add(once_key)
+    print(f"planner_glass: {msg}", file=sys.stderr)
+
+
+# ---- 1. files: ~/.config/harbor/glass* (same chain as Harbor Settings) -------
 
 def config_path(name):
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
     return os.path.join(base, "harbor", name)
 
 
-def _read(name):
+def read_file(name):
+    """The file's text, stripped; None when it is missing or unreadable."""
+    path = config_path(name)
     try:
-        with open(config_path(name), encoding="utf-8") as fh:
+        with open(path, encoding="utf-8") as fh:
             return fh.read().strip()
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError) as e:
+        log(f"cannot read {path}: {e}; ignoring it", once_key=("read", path))
         return None
 
 
-def _write(name, text):
+def write_file(name, text):
+    """Write atomically (temp file + rename), so a reader never sees a
+    half-written file. Returns False (and logs) when it fails."""
     path = config_path(name)
+    tmp = f"{path}.{os.getpid()}.tmp"
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
+        with open(tmp, "w", encoding="utf-8") as fh:
             fh.write(text)
-    except OSError:
-        pass
+        os.replace(tmp, path)
+        return True
+    except OSError as e:
+        log(f"cannot write {path}: {e}")
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return False
 
 
-def _set(spec, key, value):
+# ---- 2. spec: parse values, resolve one app's glass --------------------------
+
+def _number(value, low, high):
+    try:
+        return max(low, min(high, int(value, 10)))
+    except ValueError:
+        return None
+
+
+def set_value(spec, key, value):
+    """Set one glass value from text; returns False (spec unchanged) for an
+    unknown key or a bad value."""
     key = key.strip().removeprefix("glass-")
     value = str(value).strip().strip("'")
-    if key == "effect" and value.upper() in EFFECTS:
-        spec[key] = value.upper()
-    elif key == "material" and value.upper() in MATERIALS:
-        spec[key] = value.upper()
-    elif key == "style" and value.upper() in STYLES:
-        spec[key] = value.upper()
-    elif key == "opacity" and value.isdigit():
-        spec[key] = max(10, min(100, int(value)))
-    elif key in STRENGTHS and value.isdigit():
-        spec[key] = min(200, int(value))
-    elif key in ("rim", "glare", "shadow", "light-follows"):
-        spec[key] = value == "true"
-    elif key == "lumina" and value.upper() in LUMINA_STYLES:
-        spec[key] = value.upper()
-    elif key == "lumina-colours" and value.upper() in LUMINA_COLOURS:
-        spec[key] = value.upper()
-    elif key == "lumina-colour" and len(value) == 7 and value.startswith("#"):
-        try:
-            int(value[1:], 16)
-            spec[key] = value.lower()
-        except ValueError:
-            pass
-    elif key == "lumina-intensity" and value.isdigit():
-        spec[key] = max(20, min(100, int(value)))
+    up = value.upper()
+    if (key == "effect" and up in EFFECTS or key == "material" and up in MATERIALS
+            or key == "style" and up in STYLES or key == "lumina" and up in LUMINA_STYLES
+            or key == "lumina-colours" and up in LUMINA_COLOURS):
+        spec[key] = up
+    elif key in ("opacity", "lumina-intensity") or key in STRENGTHS:
+        low, high = {"opacity": (10, 100), "lumina-intensity": (20, 100)}.get(key, (0, 200))
+        n = _number(value, low, high) if value.isascii() else None
+        if n is None:
+            return False
+        spec[key] = n
+    elif key in ("rim", "glare", "shadow", "light-follows") and value.lower() in ("true", "false"):
+        spec[key] = value.lower() == "true"
+    elif key == "lumina-colour" and _HEX.fullmatch(value):
+        spec[key] = value.lower()
+    else:
+        return False
+    return True
+
+
+def parse_checked(text):
+    """(spec, accepted, ignored): the spec plus how many pairs were used and
+    the lines that were not (for --check and the logs)."""
+    text = (text or "").strip()
+    if text.lower() in LEGACY:
+        return dict(LEGACY[text.lower()]), 1, []
+    spec, accepted, ignored = dict(DEFAULT), 0, []
+    for pair in text.replace(",", "\n").splitlines():
+        if not pair.strip():
+            continue
+        if "=" in pair and set_value(spec, *pair.split("=", 1)):
+            accepted += 1
+        else:
+            ignored.append(pair.strip())
+    return spec, accepted, ignored
 
 
 def parse(text):
-    text = (text or "").strip()
-    if text == "off":
-        return dict(OFF)
-    spec = dict(DEFAULT)
-    for pair in text.replace(",", "\n").splitlines():
-        if "=" in pair:
-            _set(spec, *pair.split("=", 1))
-    return spec
+    return parse_checked(text)[0]
 
 
 def to_text(spec):
@@ -138,38 +202,89 @@ def fusion_settings():
     return None
 
 
-def global_glass(fusion=None):
+def global_glass(fusion=None, notes=None):
+    """Global look: Fusion Desk's glass settings when its schema is installed
+    (older builds without the Lumina keys take those from glass-global),
+    else the glass-global file."""
     fusion = fusion or fusion_settings()
+    text = read_file("glass-global")
     if fusion is not None:
         spec = dict(DEFAULT)
         keys = fusion.props.settings_schema.list_keys()
+        missing = []
         for key in KEYS:
             if "glass-" + key in keys:
-                _set(spec, key, fusion.get_value("glass-" + key).print_(False))
+                set_value(spec, key, fusion.get_value("glass-" + key).print_(False))
+            elif key in LUMINA_KEYS:
+                missing.append(key)
+        if missing and text:
+            from_file = parse(text)
+            spec.update({k: from_file[k] for k in missing})
+            if notes is not None:
+                notes.append(f"Fusion Desk has no {', '.join(missing)}: taken from glass-global")
         return spec
-    text = _read("glass-global")
-    return parse(text) if text else dict(DEFAULT)
+    if not text:
+        return dict(DEFAULT)
+    spec, _n, ignored = parse_checked(text)
+    if notes is not None:
+        notes.extend(f"glass-global: ignored line {line!r}" for line in ignored)
+    return spec
 
 
-def scope_glass(scope):
-    """A scope's own values ("harbor" or an app name), or None to follow."""
-    text = _read("glass" if scope == "harbor" else "glass-" + scope)
-    if text is None:  # missing: follow (the All Harbor apps scope is gone; it follows Global)
+def scope_glass(scope, notes=None):
+    """A scope's own values ("harbor" or an app name), or None to follow.
+    A file with no usable line also follows (logged), instead of silently
+    giving the app the default frosted look."""
+    name = "glass" if scope == "harbor" else "glass-" + scope
+    text = read_file(name)
+    if text is None:
+        # missing: follow (the All Harbor apps scope is gone; it follows Global)
+        if notes is not None and os.path.exists(config_path(name)):
+            notes.append(f"{name} cannot be read: following the global look")
         return None
-    if text in ("", "global", "harbor"):
+    if text.lower() in FOLLOW_WORDS:
         return None
-    return parse(text)
+    problems = []
+    spec, accepted, ignored = parse_checked(text)
+    problems += [f"{name}: ignored line {line!r}" for line in ignored]
+    if not accepted:
+        problems.append(f"{name} has no usable line: following the global look")
+    for msg in problems:
+        log(msg, once_key=msg)
+    if notes is not None:
+        notes.extend(problems)
+    return spec if accepted else None
+
+
+def resolve_explained(app, fusion=None):
+    """(spec, source, notes): the app's glass, which layer decided it
+    (PLANNER_GLASS / glass-<app> / glass / Fusion Desk / glass-global /
+    default) and what was ignored on the way."""
+    notes = []
+    env = os.environ.get("PLANNER_GLASS")
+    if env:      # screenshot runs: off|planner|key=value,...
+        return (dict(PLANNER_SPEC) if env == "planner" else parse(env)), "PLANNER_GLASS", notes
+    for scope, source in ((app, "glass-" + app), ("harbor", "glass")):
+        spec = scope_glass(scope, notes)
+        if spec is not None:
+            return spec, source, notes
+    fusion = fusion or fusion_settings()
+    if fusion is not None:
+        source = "Fusion Desk"
+    else:
+        source = "glass-global" if read_file("glass-global") else "default"
+    return global_glass(fusion, notes), source, notes
+
+
+_last_debug = {}
 
 
 def resolve(app, fusion=None):
-    if os.environ.get("PLANNER_GLASS"):      # screenshot runs: off|planner|key=value,...
-        env = os.environ["PLANNER_GLASS"]
-        return dict(PLANNER_SPEC) if env == "planner" else parse(env)
-    spec = scope_glass(app)
-    if spec is None:
-        spec = scope_glass("harbor")
-    if spec is None:
-        spec = global_glass(fusion)
+    spec, source, _notes = resolve_explained(app, fusion)
+    if DEBUG and _last_debug.get(app) != (source, spec):
+        _last_debug[app] = (source, spec)
+        log(f"{app}: style={spec['style']} effect={spec['effect']} lumina={spec['lumina']} "
+            f"colours={spec['lumina-colours']} (from {source})")
     return spec
 
 
@@ -204,47 +319,50 @@ def is_planner(spec):
 # (dark: smoky violet) with a top-to-bottom sheen, a white rim, a bright top
 # edge and a soft coloured shadow. Header = near-solid bar; footer = floating
 # glass card.
+# ---- 3. tokens: colour helpers and the named colours of a spec ---------------
+
 ACCENT = "linear-gradient(135deg, #6366f1, #8b5cf6)"
 ACCENT_SHADOW = "0 8px 18px -6px rgba(99,102,241,0.50)"
 
 
-def _rgb(hexcol):
+def rgb(hexcol):
     h = hexcol.lstrip("#")
     return tuple(int(h[i:i + 2], 16) for i in (0, 2, 4))
 
 
-def _mix(hexcol, base, amount):
-    c = _rgb(hexcol)
+def mix(hexcol, base, amount):
+    c = rgb(hexcol)
     return tuple(round(base[i] + (c[i] - base[i]) * amount) for i in range(3))
 
 
-def _hex(rgb):
+def to_hex(rgb):
     return "#%02x%02x%02x" % rgb
 
 
-def _rgba(hexcol, alpha):
-    return "rgba(%d,%d,%d,%.3f)" % (*_rgb(hexcol), max(0.0, min(1.0, alpha)))
+def rgba(hexcol, alpha):
+    return "rgba(%d,%d,%d,%.3f)" % (*rgb(hexcol), max(0.0, min(1.0, alpha)))
 
 
 def triad(hexcol):
     """Three neighbouring hues around one colour (-32 deg, itself, +32 deg), kept
     bright enough to read as colour: one accent still gives a colour sweep."""
-    r, g, b = (v / 255 for v in _rgb(hexcol))
+    r, g, b = (v / 255 for v in rgb(hexcol))
     h, light, sat = colorsys.rgb_to_hls(r, g, b)
     light, sat = min(max(light, 0.45), 0.62), max(sat, 0.55)
 
     def at(dh):
-        return _hex(tuple(round(v * 255) for v in colorsys.hls_to_rgb((h + dh) % 1.0, light, sat)))
+        return to_hex(tuple(round(v * 255) for v in colorsys.hls_to_rgb((h + dh) % 1.0, light, sat)))
     return at(-32 / 360), at(0), at(32 / 360)
 
 
 def system_accent():
+    """GNOME's accent colour (Settings -> Appearance), blue when unknown."""
     try:
         iface = Gio.Settings(schema_id="org.gnome.desktop.interface")
         if "accent-color" in iface.props.settings_schema.list_keys():
             return GNOME_ACCENTS.get(iface.get_string("accent-color"), "#3584e4")
-    except Exception:
-        pass
+    except Exception as e:  # no schema in odd sessions
+        log(f"no GNOME accent colour ({e}); using blue", once_key="accent")
     return "#3584e4"
 
 
@@ -259,7 +377,6 @@ def lumina_colours(spec):
         return triad(spec.get("lumina-colour", "#8b5cf6"))
     return LUMINA_SETS.get(which, LUMINA_SETS["AURORA"])
 CARD_SHADOW = "0 10px 24px -12px rgba(76,61,180,0.30), 0 2px 6px -2px rgba(76,61,180,0.10)"
-LG_SHADOW = "0 16px 32px -14px rgba(76,61,180,0.38)"
 
 
 def soften(dark):
@@ -314,30 +431,29 @@ def tokens(dark, see_through=False, opacity=100, spec=None):
         # keeps only a faint tint so window edges stay calm (no coloured glows)
         if dark:
             base = (20, 16, 40)
-            stops = (_mix(c1, base, 0.09 * k), _mix(c2, base, 0.08 * k), _mix(c3, base, 0.07 * k))
+            stops = (mix(c1, base, 0.09 * k), mix(c2, base, 0.08 * k), mix(c3, base, 0.07 * k))
             on = (255, 255, 255)
-            t.update(accent_text=_hex(_mix(c2, on, 0.60)), btn_text=_hex(_mix(c2, on, 0.55)),
-                     title=_hex(_mix(c2, on, 0.50 + 0.3 * k)), icon=_hex(_mix(c3, on, 0.55 + 0.25 * k)),
-                     chip=_rgba(c3, 0.20), chip_line=_rgba(c3, 0.30), sel=_rgba(c2, 0.18))
+            t.update(accent_text=to_hex(mix(c2, on, 0.60)), btn_text=to_hex(mix(c2, on, 0.55)),
+                     title=to_hex(mix(c2, on, 0.50 + 0.3 * k)), chip_line=rgba(c3, 0.30),
+                     sel=rgba(c2, 0.18))
         else:
             base = (250, 248, 255)
-            stops = (_mix(c1, base, 0.06 * k), _mix(c2, base, 0.045 * k), _mix(c3, base, 0.055 * k))
+            stops = (mix(c1, base, 0.06 * k), mix(c2, base, 0.045 * k), mix(c3, base, 0.055 * k))
             ink = (20, 16, 40)
-            t.update(accent_text=_hex(_mix(c2, ink, 0.80)), btn_text=_hex(_mix(c2, ink, 0.78)),
-                     title=_hex(_mix(c2, ink, 0.60 + 0.25 * k)), icon=_hex(_mix(c3, ink, 0.70 + 0.2 * k)),
-                     chip=_rgba(c3, 0.14), chip_line="rgba(255,255,255,0.85)", sel=_rgba(c2, 0.14),
-                     hair=_rgba(c2, 0.12),
+            t.update(accent_text=to_hex(mix(c2, ink, 0.80)), btn_text=to_hex(mix(c2, ink, 0.78)),
+                     title=to_hex(mix(c2, ink, 0.60 + 0.25 * k)),
+                     chip_line="rgba(255,255,255,0.85)", sel=rgba(c2, 0.14),
+                     hair=rgba(c2, 0.12),
                      # white buttons vanish on white glass cards: a faint wash of
                      # the hue and a hairline keep them visible but quiet
-                     btn=_rgba(c2, 0.08), btn_hover=_rgba(c2, 0.14), btn_line=_rgba(c2, 0.22))
-        # per-colour ink for icons/headings (like Astra Android's colourful palette)
+                     btn=rgba(c2, 0.08), btn_hover=rgba(c2, 0.14), btn_line=rgba(c2, 0.22))
+        # ONE hue (the middle colour) for heading/icon ink and its chip
         on_ = (255, 255, 255) if dark else (20, 16, 40)
         tone = 0.62 + 0.2 * k if dark else 0.78 + 0.12 * k
-        for n, c in (("1", c1), ("2", c2), ("3", c3)):
-            t["i" + n] = _hex(_mix(c, on_, tone))
-            t["chip" + n] = _rgba(c, (0.20 if dark else 0.14) * (0.6 + 0.6 * k))
+        t["i2"] = to_hex(mix(c2, on_, tone))
+        t["chip2"] = rgba(c2, (0.20 if dark else 0.14) * (0.6 + 0.6 * k))
         t.update(a1=c1, a2=c2, a3=c3, accent="linear-gradient(135deg, %s, %s)" % (c1, c2),
-                 accent_shadow="0 4px 10px -6px rgba(0,0,0,0.35)", shade="%d,%d,%d" % _rgb(c2),
+                 accent_shadow="0 4px 10px -6px rgba(0,0,0,0.35)", shade="%d,%d,%d" % rgb(c2),
                  colourful=True)
     t["backdrop"] = "linear-gradient(150deg, %s)" % ", ".join(
         "rgba(%d,%d,%d,%.2f)" % (*c, a) for c in stops)
@@ -345,6 +461,8 @@ def tokens(dark, see_through=False, opacity=100, spec=None):
         t["card"], t["card_img"], t["rim"], t["spec"], t["shadow"])
     return t
 
+
+# ---- 4. CSS: tokens -> GTK4/libadwaita and GTK3 ------------------------------
 
 def css_gtk4(dark, see_through=False, opacity=100, spec=None):
     """libadwaita: recolour through Adwaita's CSS variables, paint the planner
@@ -389,13 +507,13 @@ headerbar {{ background-color: {t["bar"]}; box-shadow: 0 1px {t["hair"]}, 0 6px 
 toolbarview > .bottom-bar, actionbar > revealer > box {{ margin: 0 12px 12px; border-radius: 16px; {t["glass"]} }}
 actionbar {{ background-color: transparent; border: none; box-shadow: none; }}
 row:selected, .navigation-sidebar > row:selected {{ background-color: {t["sel"]}; background-image: none; }}
-progressbar > trough > progress, scale > trough > highlight {{ background-image: linear-gradient(to right, {t["a1"]}, {t["a2"]}, {t["a3"] if t["a1"] != "#6366f1" else t["a2"]}); }}
+progressbar > trough > progress, scale > trough > highlight {{ background-image: linear-gradient(to right, {t["a1"]}, {t["a2"]}, {t["a3"] if t.get("colourful") else t["a2"]}); }}
 progressbar > trough, scale > trough {{ background-color: {t["btn"]}; }}
 switch:checked {{ background-image: {t["accent"]}; }}
-""" + _colour_text(t)
+""" + _colour_text(t, adwaita=True)
 
 
-def _colour_text(t):
+def _colour_text(t, adwaita=False):
     """COLOURFUL, used with care: text stays neutral; headings, row/sidebar icons
     (on a small glossy chip) and selections take ONE hue (the set's middle
     colour); the other two colours only appear inside accent gradients."""
@@ -404,7 +522,7 @@ def _colour_text(t):
     gloss = "linear-gradient(to bottom, rgba(255,255,255,0.30), rgba(255,255,255,0.0) 60%)"
     css = f"""
 .title-1, .title-2, .app-title {{ color: {t["title"]}; }}
-row box.prefixes > image, row > box > image.hb-row-icon {{ background-image: {gloss};
+{"row box.prefixes > image, " if adwaita else ""}row > box > image.hb-row-icon {{ background-image: {gloss};
   border-radius: 10px; padding: 6px; box-shadow: inset 0 0 0 1px {t["chip_line"]}; }}
 row:selected, .navigation-sidebar > row:selected {{ background-color: {t["sel"]}; background-image: {gloss}; }}
 row:selected label.title, .navigation-sidebar > row:selected label {{ color: {t["title"]}; }}
@@ -413,9 +531,13 @@ button.suggested-action, button.default {{ background-image: {gloss}, {t["accent
 """
     # one hue (the middle colour) for every heading/icon/chip: calm, not a rainbow
     ink, chip = t["i2"], t["chip2"]
-    css += f"""preferencesgroup .heading, .hb-section-group .heading {{ color: {ink}; }}
-row box.prefixes > image, row > box > image.hb-row-icon {{ color: {ink}; background-color: {chip}; }}
+    css += f""".hb-section-group .heading {{ color: {ink}; }}
+row > box > image.hb-row-icon {{ color: {ink}; background-color: {chip}; }}
 .navigation-sidebar > row image, list.hb-nav > row image {{ color: {ink}; }}
+"""
+    if adwaita:   # libadwaita-only widgets (GTK3 has no preferencesgroup / prefixes box)
+        css += f"""preferencesgroup .heading {{ color: {ink}; }}
+row box.prefixes > image {{ color: {ink}; background-color: {chip}; }}
 """
     return css
 
@@ -473,6 +595,8 @@ label {{ color: {t["text"]}; }}
 
 # ---- per-app state, choice and live watching --------------------------------
 
+# ---- 5. Look: per-app state, choice and live watching ------------------------
+
 class Look:
     """This app's PLANNER state. `on_change()` runs when the shared glass
     files, Fusion Desk's glass settings or this app's choice change."""
@@ -483,6 +607,7 @@ class Look:
         self._monitors = []
         self._fusion = None
         self._shell = None
+        self._pending = False
         self.watch()
 
     @property
@@ -506,11 +631,13 @@ class Look:
 
     def set_choice(self, choice):
         if choice == "follow":
-            _write("glass-" + self.app, "harbor")
+            write_file("glass-" + self.app, "harbor")
         elif choice == "planner":
-            _write("glass-" + self.app, to_text(PLANNER_SPEC))
+            # keep the Lumina options (Calm/Colourful, colours) the app had
+            spec = dict(PLANNER_SPEC, **{k: self.spec[k] for k in LUMINA_KEYS})
+            write_file("glass-" + self.app, to_text(spec))
         elif choice == "normal":
-            _write("glass-" + self.app, to_text(OFF))
+            write_file("glass-" + self.app, to_text(OFF))
         self._changed()
 
     def set_own(self, key, value):
@@ -519,8 +646,9 @@ class Look:
         own = scope_glass(self.app) or dict(self.spec)
         own["effect"] = own["effect"] if own["effect"] != "OFF" else "STRONG"
         own["style"] = "PLANNER"
-        _set(own, key, value)
-        _write("glass-" + self.app, to_text(own))
+        if not set_value(own, key, value):
+            log(f"{self.app}: ignored {key}={value!r}")
+        write_file("glass-" + self.app, to_text(own))
         self._changed()
 
     def css_gtk4(self, dark):
@@ -528,12 +656,21 @@ class Look:
         return css_gtk4(dark, self.see_through, spec["opacity"], spec) if is_planner(spec) else ""
 
     def css_gtk3(self, dark):
+        # never see-through: these GTK3 apps have no RGBA visual, so a
+        # translucent window would paint black
         spec = self.spec
-        return css_gtk3(dark, self.see_through, spec["opacity"], spec) if is_planner(spec) else ""
+        return css_gtk3(dark, False, spec["opacity"], spec) if is_planner(spec) else ""
 
     def _changed(self, *_):
-        if self.on_change:
-            GLib.idle_add(lambda: (self.on_change(), False)[1])
+        # one restyle per burst: a single save fires several monitor events
+        if self.on_change and not self._pending:
+            self._pending = True
+            GLib.idle_add(self._run_change)
+
+    def _run_change(self):
+        self._pending = False
+        self.on_change()
+        return False
 
     def watch(self):
         for name in ("glass", "glass-global", "glass-" + self.app):
@@ -543,8 +680,8 @@ class Look:
                 mon = Gio.File.new_for_path(path).monitor_file(Gio.FileMonitorFlags.NONE, None)
                 mon.connect("changed", self._changed)
                 self._monitors.append(mon)
-            except (GLib.Error, OSError):
-                pass
+            except (GLib.Error, OSError) as e:
+                log(f"{self.app}: live updates of {path} are off: {e}")
         try:  # COLOURFUL + ACCENT follows the GNOME accent live
             self._iface = Gio.Settings(schema_id="org.gnome.desktop.interface")
             self._iface.connect("changed::accent-color", lambda *_: self.spec.get(
@@ -561,3 +698,45 @@ class Look:
                 self._shell.connect("changed::enabled-extensions", self._changed)
             except Exception:
                 self._shell = None
+
+
+# ---- diagnostics: python3 planner_glass.py --check [app ...] -----------------
+
+def check(apps):
+    """Print which layer decides each app's look, its values and the problems."""
+    fusion = fusion_settings()
+    print(f"config folder: {os.path.dirname(config_path('x'))}")
+    print(f"Fusion Desk schema: {'found' if fusion is not None else 'not installed'}")
+    print(f"GNOME accent: {system_accent()}")
+    problems = 0
+    for app in apps:
+        spec, source, notes = resolve_explained(app, fusion)
+        if spec["effect"] == "OFF":
+            look = "off"
+        elif is_planner(spec):
+            look = "Lumina " + spec["lumina"].title()
+        else:
+            look = spec["style"].title()
+        print(f"\n{app}: {look}, effect {spec['effect']}, opacity {spec['opacity']} (from {source})")
+        if is_planner(spec) and spec["lumina"] == "COLOURFUL":
+            print(f"  colours {spec['lumina-colours']} -> {', '.join(lumina_colours(spec))}, "
+                  f"intensity {spec['lumina-intensity']}")
+        for n in notes:
+            print(f"  ! {n}")
+        problems += len(notes)
+        for dark in (False, True):   # the CSS must build in both modes
+            try:
+                css_gtk4(dark, False, spec["opacity"], spec)
+                css_gtk3(dark, False, spec["opacity"], spec)
+            except Exception as e:  # report it, never hide it
+                problems += 1
+                print(f"  ! CSS fails ({'dark' if dark else 'light'}): {e!r}")
+    print(f"\n{problems} problem(s)")
+    return problems
+
+
+if __name__ == "__main__":
+    if len(sys.argv) >= 2 and sys.argv[1] == "--check":
+        known = ("files", "taskmgr", "settings", "apphub", "astra", "sysmic", "extendo")
+        sys.exit(1 if check(sys.argv[2:] or known) else 0)
+    print(__doc__)
