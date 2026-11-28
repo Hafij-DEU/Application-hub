@@ -262,6 +262,16 @@ CARD_SHADOW = "0 10px 24px -12px rgba(76,61,180,0.30), 0 2px 6px -2px rgba(76,61
 LG_SHADOW = "0 16px 32px -14px rgba(76,61,180,0.38)"
 
 
+def soften(dark):
+    """Glass effect Soft: flat frosted glass (no sheen, a faint rim, almost no
+    shadow) instead of Strong's glossy glass; same colours and corners."""
+    if dark:
+        return dict(card_img="none", rim="rgba(255,255,255,0.06)", spec="inset 0 0 transparent",
+                    shadow="0 2px 8px -6px rgba(0,0,0,0.35)")
+    return dict(card="rgba(255,255,255,0.58)", card_img="none", rim="rgba(255,255,255,0.40)",
+                spec="inset 0 0 transparent", shadow="0 2px 8px -6px rgba(76,61,180,0.12)")
+
+
 def tokens(dark, see_through=False, opacity=100, spec=None):
     a = max(0.35, opacity / 100) if see_through else 1.0
     if dark:
@@ -292,6 +302,8 @@ def tokens(dark, see_through=False, opacity=100, spec=None):
                  btn_text="#4338ca", btn_line="rgba(255,255,255,0.90)",
                  hover="rgba(255,255,255,0.45)", sel="rgba(99,102,241,0.14)",
                  shadow=CARD_SHADOW)
+    if spec and spec.get("effect") == "SOFT":
+        t.update(soften(dark))
     t.update(a1="#6366f1", a2="#8b5cf6", a3="#9333ea", accent=ACCENT, accent_shadow=ACCENT_SHADOW,
              shade="49,46,129")
     cols = lumina_colours(spec)
@@ -302,19 +314,22 @@ def tokens(dark, see_through=False, opacity=100, spec=None):
         # keeps only a faint tint so window edges stay calm (no coloured glows)
         if dark:
             base = (20, 16, 40)
-            stops = (_mix(c1, base, 0.13 * k), _mix(c2, base, 0.12 * k), _mix(c3, base, 0.11 * k))
+            stops = (_mix(c1, base, 0.09 * k), _mix(c2, base, 0.08 * k), _mix(c3, base, 0.07 * k))
             on = (255, 255, 255)
             t.update(accent_text=_hex(_mix(c2, on, 0.60)), btn_text=_hex(_mix(c2, on, 0.55)),
                      title=_hex(_mix(c2, on, 0.50 + 0.3 * k)), icon=_hex(_mix(c3, on, 0.55 + 0.25 * k)),
-                     chip=_rgba(c3, 0.20), chip_line=_rgba(c3, 0.30), sel=_rgba(c2, 0.24))
+                     chip=_rgba(c3, 0.20), chip_line=_rgba(c3, 0.30), sel=_rgba(c2, 0.18))
         else:
             base = (250, 248, 255)
-            stops = (_mix(c1, base, 0.11 * k), _mix(c2, base, 0.09 * k), _mix(c3, base, 0.10 * k))
+            stops = (_mix(c1, base, 0.06 * k), _mix(c2, base, 0.045 * k), _mix(c3, base, 0.055 * k))
             ink = (20, 16, 40)
             t.update(accent_text=_hex(_mix(c2, ink, 0.80)), btn_text=_hex(_mix(c2, ink, 0.78)),
                      title=_hex(_mix(c2, ink, 0.60 + 0.25 * k)), icon=_hex(_mix(c3, ink, 0.70 + 0.2 * k)),
                      chip=_rgba(c3, 0.14), chip_line="rgba(255,255,255,0.85)", sel=_rgba(c2, 0.14),
-                     hair=_rgba(c2, 0.12))
+                     hair=_rgba(c2, 0.12),
+                     # white buttons vanish on white glass cards: a faint wash of
+                     # the hue and a hairline keep them visible but quiet
+                     btn=_rgba(c2, 0.08), btn_hover=_rgba(c2, 0.14), btn_line=_rgba(c2, 0.22))
         # per-colour ink for icons/headings (like Astra Android's colourful palette)
         on_ = (255, 255, 255) if dark else (20, 16, 40)
         tone = 0.62 + 0.2 * k if dark else 0.78 + 0.12 * k
